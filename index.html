@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Flapping Bird</title>
+  <title>Snowy Log Flappy Seal</title>
   <style>
     * {
       box-sizing: border-box;
@@ -15,14 +15,14 @@
       justify-content: center;
       align-items: center;
       min-height: 100vh;
-      background: #1e293b;
+      background: #0f172a;
       font-family: system-ui, -apple-system, sans-serif;
     }
     canvas {
-      border: 3px solid #0f172a;
+      border: 3px solid #1e293b;
       border-radius: 12px;
-      background: #70c5ce;
-      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.45);
+      background: #bae6fd;
+      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5);
       cursor: pointer;
     }
   </style>
@@ -37,34 +37,71 @@
     // Game constants
     const GRAVITY = 0.45;
     const JUMP_FORCE = -7.8;
-    const PIPE_WIDTH = 62;
-    const PIPE_GAP = 145;
-    const PIPE_SPEED = 2.4;
-    const PIPE_SPAWN_INTERVAL = 95; // frames
+    const LOG_WIDTH = 62;
+    const LOG_GAP = 152;
+    const LOG_SPEED = 2.4;
+    const LOG_SPAWN_INTERVAL = 95; // frames
     const GROUND_HEIGHT = 80;
+    const NOCLIP_WALLS = false;
 
     // Game state: "start" | "playing" | "gameover"
     let state = "start";
     let score = 0;
-    let bestScore = Number(localStorage.getItem("flappyBestScore") || 0);
+    let bestScore = Number(localStorage.getItem("snowyLogChubbySealBestScore") || 0);
     let frames = 0;
 
-    const bird = {
-      x: 95,
+    const seal = {
+      x: 102,
       y: canvas.height / 2 - 40,
-      radius: 16,
+      radius: 21,
       vy: 0,
-      rotation: 0
+      rotation: 0,
+      flipperAngle: 0
     };
 
-    let pipes = [];
+    let logs = [];
+    let steamPuffs = [];
+
+    // Scattered background pine trees (with deterministic pseudo-random scatter)
+    const pineTrees = Array.from({ length: 14 }, (_, idx) => {
+      const seed = Math.sin(idx * 91.7 + 13.3) * 10000;
+      const rand = seed - Math.floor(seed);
+      const seed2 = Math.sin(idx * 47.1 + 5.9) * 10000;
+      const rand2 = seed2 - Math.floor(seed2);
+
+      return {
+        x: idx * 46 + rand * 28,
+        scale: 0.65 + rand2 * 0.65,
+        layer: idx % 2 === 0 ? "back" : "front"
+      };
+    });
+
+    // Gentle falling snowflakes
+    const snowflakes = Array.from({ length: 42 }, (_, idx) => {
+      const s1 = Math.sin(idx * 31.4 + 2.1) * 10000;
+      const r1 = s1 - Math.floor(s1);
+      const s2 = Math.sin(idx * 73.9 + 8.7) * 10000;
+      const r2 = s2 - Math.floor(s2);
+      const s3 = Math.sin(idx * 19.3 + 4.4) * 10000;
+      const r3 = s3 - Math.floor(s3);
+
+      return {
+        x: r1 * canvas.width,
+        y: r2 * (canvas.height - GROUND_HEIGHT),
+        radius: 1.5 + r3 * 2.2,
+        speedY: 0.7 + r3 * 1.1,
+        driftPhase: r1 * Math.PI * 2
+      };
+    });
 
     function resetGame() {
-      bird.x = 95;
-      bird.y = canvas.height / 2 - 40;
-      bird.vy = 0;
-      bird.rotation = 0;
-      pipes = [];
+      seal.x = 102;
+      seal.y = canvas.height / 2 - 40;
+      seal.vy = 0;
+      seal.rotation = 0;
+      seal.flipperAngle = 0;
+      logs = [];
+      steamPuffs = [];
       score = 0;
       frames = 0;
     }
@@ -73,13 +110,16 @@
       if (state === "start") {
         resetGame();
         state = "playing";
-        bird.vy = JUMP_FORCE;
+        seal.vy = JUMP_FORCE;
+        seal.flipperAngle = -0.7;
       } else if (state === "playing") {
-        bird.vy = JUMP_FORCE;
+        seal.vy = JUMP_FORCE;
+        seal.flipperAngle = -0.7;
       } else if (state === "gameover") {
         resetGame();
         state = "playing";
-        bird.vy = JUMP_FORCE;
+        seal.vy = JUMP_FORCE;
+        seal.flipperAngle = -0.7;
       }
     }
 
@@ -92,17 +132,37 @@
 
     canvas.addEventListener("pointerdown", flap);
 
-    function spawnPipe() {
+    function spawnLog() {
       const minTopHeight = 50;
-      const maxTopHeight = canvas.height - GROUND_HEIGHT - PIPE_GAP - 50;
+      const maxTopHeight = canvas.height - GROUND_HEIGHT - LOG_GAP - 50;
       const topHeight =
         Math.floor(Math.random() * (maxTopHeight - minTopHeight + 1)) + minTopHeight;
 
-      pipes.push({
+      logs.push({
         x: canvas.width,
         topHeight,
-        bottomY: topHeight + PIPE_GAP,
+        bottomY: topHeight + LOG_GAP,
         passed: false
+      });
+    }
+
+    function spawnSteam() {
+      if (steamPuffs.length > 35) return;
+      const angle = seal.rotation;
+      const cos = Math.cos(angle);
+      const sin = Math.sin(angle);
+      const localX = 18;
+      const localY = 1;
+      const mugTopX = seal.x + localX * cos - localY * sin;
+      const mugTopY = seal.y + localX * sin + localY * cos;
+
+      steamPuffs.push({
+        x: mugTopX + (-2 + Math.random() * 4),
+        y: mugTopY,
+        vx: -0.7 - Math.random() * 0.7,
+        vy: -0.9 - Math.random() * 0.7,
+        radius: 2.5 + Math.random() * 2.2,
+        life: 24 + Math.floor(Math.random() * 12)
       });
     }
 
@@ -115,74 +175,106 @@
     }
 
     function update() {
+      // Animate snowflakes even on start/gameover screens
+      const snowFrames = state === "playing" ? frames : frames * 0.35;
+      for (const flake of snowflakes) {
+        flake.y += flake.speedY;
+        flake.x += Math.sin(snowFrames * 0.04 + flake.driftPhase) * 0.5;
+        if (flake.y > canvas.height - GROUND_HEIGHT) {
+          flake.y = -5;
+          flake.x = (flake.x + canvas.width) % canvas.width;
+        }
+        if (flake.x < 0) flake.x += canvas.width;
+        if (flake.x > canvas.width) flake.x -= canvas.width;
+      }
+
       if (state !== "playing") return;
 
       frames++;
 
-      // Bird physics
-      bird.vy += GRAVITY;
-      bird.y += bird.vy;
-      bird.rotation = Math.max(-0.45, Math.min(Math.PI / 2, bird.vy * 0.08));
+      // Seal physics
+      seal.vy += GRAVITY;
+      seal.y += seal.vy;
+      seal.rotation = Math.max(-0.38, Math.min(Math.PI / 2, seal.vy * 0.07));
+      seal.flipperAngle += (0.15 - seal.flipperAngle) * 0.14;
+
+      // Gentle steam rising from hot chocolate mug
+      if (frames % 7 === 0) {
+        spawnSteam();
+      }
+
+      for (let i = steamPuffs.length - 1; i >= 0; i--) {
+        const sp = steamPuffs[i];
+        sp.x += sp.vx + Math.sin(frames * 0.15 + i) * 0.25;
+        sp.y += sp.vy;
+        sp.radius += 0.05;
+        sp.life--;
+        if (sp.life <= 0) {
+          steamPuffs.splice(i, 1);
+        }
+      }
 
       // Ceiling clamp
-      if (bird.y - bird.radius < 0) {
-        bird.y = bird.radius;
-        bird.vy = 0;
+      if (seal.y - seal.radius < 0) {
+        seal.y = seal.radius;
+        seal.vy = 0;
       }
 
       // Ground collision
-      if (bird.y + bird.radius >= canvas.height - GROUND_HEIGHT) {
-        bird.y = canvas.height - GROUND_HEIGHT - bird.radius;
+      if (seal.y + seal.radius >= canvas.height - GROUND_HEIGHT) {
+        seal.y = canvas.height - GROUND_HEIGHT - seal.radius;
         endGame();
         return;
       }
 
-      // Spawn pipes
-      if (frames % PIPE_SPAWN_INTERVAL === 0) {
-        spawnPipe();
+      // Spawn logs
+      if (frames % LOG_SPAWN_INTERVAL === 0) {
+        spawnLog();
       }
 
-      // Move pipes & check collisions/scoring
-      for (let i = pipes.length - 1; i >= 0; i--) {
-        const p = pipes[i];
-        p.x -= PIPE_SPEED;
+      // Move logs & check collisions/scoring
+      for (let i = logs.length - 1; i >= 0; i--) {
+        const l = logs[i];
+        l.x -= LOG_SPEED;
 
-        const hitTop = circleRectCollision(
-          bird.x,
-          bird.y,
-          bird.radius - 2,
-          p.x,
-          0,
-          PIPE_WIDTH,
-          p.topHeight
-        );
+        if (!NOCLIP_WALLS) {
+          const hitTop = circleRectCollision(
+            seal.x,
+            seal.y,
+            seal.radius - 2,
+            l.x,
+            0,
+            LOG_WIDTH,
+            l.topHeight
+          );
 
-        const hitBottom = circleRectCollision(
-          bird.x,
-          bird.y,
-          bird.radius - 2,
-          p.x,
-          p.bottomY,
-          PIPE_WIDTH,
-          canvas.height - GROUND_HEIGHT - p.bottomY
-        );
+          const hitBottom = circleRectCollision(
+            seal.x,
+            seal.y,
+            seal.radius - 2,
+            l.x,
+            l.bottomY,
+            LOG_WIDTH,
+            canvas.height - GROUND_HEIGHT - l.bottomY
+          );
 
-        if (hitTop || hitBottom) {
-          endGame();
-          return;
-        }
-
-        if (!p.passed && p.x + PIPE_WIDTH < bird.x) {
-          p.passed = true;
-          score++;
-          if (score > bestScore) {
-            bestScore = score;
-            localStorage.setItem("flappyBestScore", String(bestScore));
+          if (hitTop || hitBottom) {
+            endGame();
+            return;
           }
         }
 
-        if (p.x + PIPE_WIDTH < -20) {
-          pipes.splice(i, 1);
+        if (!l.passed && l.x + LOG_WIDTH < seal.x) {
+          l.passed = true;
+          score++;
+          if (score > bestScore) {
+            bestScore = score;
+            localStorage.setItem("snowyLogChubbySealBestScore", String(bestScore));
+          }
+        }
+
+        if (l.x + LOG_WIDTH < -40) {
+          logs.splice(i, 1);
         }
       }
     }
@@ -191,114 +283,433 @@
       state = "gameover";
     }
 
-    function drawBackground() {
-      // Sky
-      ctx.fillStyle = "#70c5ce";
-      ctx.fillRect(0, 0, canvas.width, canvas.height - GROUND_HEIGHT);
+    function drawPineTree(tree, scrollX, groundY) {
+      const span = 650;
+      const rawX = (tree.x - scrollX) % span;
+      const screenX = rawX < -60 ? rawX + span : rawX;
+      if (screenX < -60 || screenX > canvas.width + 60) return;
 
-      // Simple clouds
-      ctx.fillStyle = "rgba(255, 255, 255, 0.75)";
-      const cloudOffset = state === "playing" ? (frames * 0.4) % (canvas.width + 120) : 0;
-      for (let i = 0; i < 3; i++) {
-        const cx = ((i * 170 - cloudOffset + canvas.width + 120) % (canvas.width + 120)) - 60;
-        const cy = 90 + (i % 2) * 45;
+      const s = tree.scale;
+      const isBack = tree.layer === "back";
+      const foliageMain = isBack ? "#1e4d3b" : "#166534";
+      const foliageShade = isBack ? "#14382b" : "#14532d";
+      const trunkColor = isBack ? "#45271a" : "#5c3422";
+
+      ctx.save();
+      ctx.translate(screenX, groundY);
+      ctx.scale(s, s);
+
+      // Trunk
+      ctx.fillStyle = trunkColor;
+      ctx.fillRect(-5, -18, 10, 18);
+
+      // Three stacked pine tiers
+      const tiers = [
+        { y: -16, w: 34, h: 28 },
+        { y: -34, w: 27, h: 26 },
+        { y: -50, w: 20, h: 24 }
+      ];
+
+      for (const t of tiers) {
+        ctx.fillStyle = foliageMain;
         ctx.beginPath();
-        ctx.arc(cx, cy, 24, 0, Math.PI * 2);
-        ctx.arc(cx + 22, cy - 6, 28, 0, Math.PI * 2);
-        ctx.arc(cx + 46, cy, 22, 0, Math.PI * 2);
+        ctx.moveTo(0, t.y - t.h);
+        ctx.lineTo(t.w / 2, t.y);
+        ctx.lineTo(-t.w / 2, t.y);
+        ctx.closePath();
+        ctx.fill();
+
+        // Shaded right slope
+        ctx.fillStyle = foliageShade;
+        ctx.beginPath();
+        ctx.moveTo(0, t.y - t.h);
+        ctx.lineTo(t.w / 2, t.y);
+        ctx.lineTo(0, t.y);
+        ctx.closePath();
+        ctx.fill();
+
+        // Snow dusting along left branch edge
+        ctx.strokeStyle = "#f8fafc";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(-1, t.y - t.h + 2);
+        ctx.lineTo(-t.w / 2 + 2, t.y - 1);
+        ctx.stroke();
+      }
+
+      ctx.restore();
+    }
+
+    function drawBackground() {
+      const groundY = canvas.height - GROUND_HEIGHT;
+
+      // Crisp winter sky gradient
+      const skyGrad = ctx.createLinearGradient(0, 0, 0, groundY);
+      skyGrad.addColorStop(0, "#7dd3fc");
+      skyGrad.addColorStop(0.65, "#bae6fd");
+      skyGrad.addColorStop(1, "#e0f2fe");
+      ctx.fillStyle = skyGrad;
+      ctx.fillRect(0, 0, canvas.width, groundY);
+
+      // Distant snowy hills
+      ctx.fillStyle = "#e2e8f0";
+      ctx.beginPath();
+      ctx.moveTo(0, groundY);
+      ctx.quadraticCurveTo(95, groundY - 75, 210, groundY - 28);
+      ctx.quadraticCurveTo(315, groundY - 82, canvas.width, groundY - 34);
+      ctx.lineTo(canvas.width, groundY);
+      ctx.closePath();
+      ctx.fill();
+
+      // Back & front scattered pine trees
+      const backScroll = state === "playing" ? frames * 0.55 : 0;
+      const frontScroll = state === "playing" ? frames * 1.05 : 0;
+
+      for (const tree of pineTrees) {
+        if (tree.layer === "back") drawPineTree(tree, backScroll, groundY);
+      }
+      for (const tree of pineTrees) {
+        if (tree.layer === "front") drawPineTree(tree, frontScroll, groundY);
+      }
+
+      // Falling snowflakes
+      ctx.fillStyle = "rgba(255, 255, 255, 0.9)";
+      for (const flake of snowflakes) {
+        ctx.beginPath();
+        ctx.arc(flake.x, flake.y, flake.radius, 0, Math.PI * 2);
         ctx.fill();
       }
     }
 
-    function drawPipes() {
-      for (const p of pipes) {
-        // Top pipe body
-        ctx.fillStyle = "#22c55e";
-        ctx.fillRect(p.x, 0, PIPE_WIDTH, p.topHeight);
-        ctx.strokeStyle = "#14532d";
-        ctx.lineWidth = 3;
-        ctx.strokeRect(p.x, 0, PIPE_WIDTH, p.topHeight);
+    function drawSingleLogSegment(x, y, w, h, isTopLog) {
+      if (h <= 0) return;
 
-        // Top pipe lip
-        ctx.fillStyle = "#16a34a";
-        ctx.fillRect(p.x - 5, p.topHeight - 24, PIPE_WIDTH + 10, 24);
-        ctx.strokeRect(p.x - 5, p.topHeight - 24, PIPE_WIDTH + 10, 24);
+      // Bark cylinder body
+      ctx.fillStyle = "#7c4a2d";
+      ctx.fillRect(x, y, w, h);
 
-        // Bottom pipe body
-        const bottomHeight = canvas.height - GROUND_HEIGHT - p.bottomY;
-        ctx.fillStyle = "#22c55e";
-        ctx.fillRect(p.x, p.bottomY, PIPE_WIDTH, bottomHeight);
-        ctx.strokeRect(p.x, p.bottomY, PIPE_WIDTH, bottomHeight);
+      // Bark vertical grain lines
+      ctx.strokeStyle = "#56301b";
+      ctx.lineWidth = 2;
+      for (const gx of [x + 11, x + 24, x + 39, x + 51]) {
+        ctx.beginPath();
+        ctx.moveTo(gx, y);
+        ctx.lineTo(gx, y + h);
+        ctx.stroke();
+      }
 
-        // Bottom pipe lip
-        ctx.fillStyle = "#16a34a";
-        ctx.fillRect(p.x - 5, p.bottomY, PIPE_WIDTH + 10, 24);
-        ctx.strokeRect(p.x - 5, p.bottomY, PIPE_WIDTH + 10, 24);
+      // Highlight strip on left side of log
+      ctx.fillStyle = "rgba(253, 230, 138, 0.16)";
+      ctx.fillRect(x + 4, y, 6, h);
+
+      // Outer bark border
+      ctx.strokeStyle = "#3b1f10";
+      ctx.lineWidth = 3;
+      ctx.strokeRect(x, y, w, h);
+
+      // Cut wood end-cap facing the gap
+      const capHeight = 18;
+      const capY = isTopLog ? y + h - capHeight : y;
+      const capX = x - 3;
+      const capW = w + 6;
+
+      ctx.fillStyle = "#deb887";
+      ctx.fillRect(capX, capY, capW, capHeight);
+      ctx.strokeStyle = "#3b1f10";
+      ctx.lineWidth = 2.6;
+      ctx.strokeRect(capX, capY, capW, capHeight);
+
+      // Concentric wood ring lines inside the cut end
+      ctx.strokeStyle = "#9c6644";
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      ctx.moveTo(capX + 5, capY + 5);
+      ctx.lineTo(capX + capW - 5, capY + 5);
+      ctx.moveTo(capX + 5, capY + 12);
+      ctx.lineTo(capX + capW - 5, capY + 12);
+      ctx.stroke();
+
+      // Light snow cap on top of top-edge or bottom-edge exposed ends
+      if (!isTopLog && y + h >= canvas.height - GROUND_HEIGHT - 2) {
+        // Bottom log rests into snow ground
+      } else if (isTopLog) {
+        ctx.fillStyle = "#f8fafc";
+        ctx.fillRect(capX + 1, capY + capHeight - 4, capW - 2, 4);
+      } else {
+        ctx.fillStyle = "#f8fafc";
+        ctx.fillRect(capX + 1, capY, capW - 2, 4);
+      }
+    }
+
+    function drawLogs() {
+      const groundY = canvas.height - GROUND_HEIGHT;
+      for (const l of logs) {
+        drawSingleLogSegment(l.x, 0, LOG_WIDTH, l.topHeight, true);
+        drawSingleLogSegment(l.x, l.bottomY, LOG_WIDTH, groundY - l.bottomY, false);
       }
     }
 
     function drawGround() {
       const groundY = canvas.height - GROUND_HEIGHT;
 
-      // Top grass strip
-      ctx.fillStyle = "#84cc16";
-      ctx.fillRect(0, groundY, canvas.width, 18);
+      // Top snow blanket
+      ctx.fillStyle = "#f8fafc";
+      ctx.fillRect(0, groundY, canvas.width, 20);
 
-      // Soil
-      ctx.fillStyle = "#ded895";
-      ctx.fillRect(0, groundY + 18, canvas.width, GROUND_HEIGHT - 18);
+      // Soft blue-tinted snow shadow under crust
+      ctx.fillStyle = "#cbd5e1";
+      ctx.fillRect(0, groundY + 16, canvas.width, 6);
 
-      // Divider line
-      ctx.strokeStyle = "#3f6212";
-      ctx.lineWidth = 3;
+      // Frozen winter earth below snow
+      ctx.fillStyle = "#64748b";
+      ctx.fillRect(0, groundY + 22, canvas.width, GROUND_HEIGHT - 22);
+
+      // Top snow line
+      ctx.strokeStyle = "#475569";
+      ctx.lineWidth = 2.5;
       ctx.beginPath();
       ctx.moveTo(0, groundY);
       ctx.lineTo(canvas.width, groundY);
       ctx.stroke();
     }
 
-    function drawBird() {
+    function drawSteam() {
+      for (const sp of steamPuffs) {
+        const alpha = Math.max(0, Math.min(0.65, sp.life / 36));
+        ctx.fillStyle = `rgba(255, 255, 255, ${alpha.toFixed(2)})`;
+        ctx.beginPath();
+        ctx.arc(sp.x, sp.y, sp.radius, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    function drawWinterBeanie() {
       ctx.save();
-      ctx.translate(bird.x, bird.y);
-      ctx.rotate(bird.rotation);
+      ctx.translate(-1, -14);
+      ctx.rotate(-0.08);
 
-      // Body
-      ctx.fillStyle = "#facc15";
+      // Pom-pom on top
+      ctx.fillStyle = "#f8fafc";
+      ctx.strokeStyle = "#1e293b";
+      ctx.lineWidth = 2.2;
       ctx.beginPath();
-      ctx.arc(0, 0, bird.radius, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.lineWidth = 2.5;
-      ctx.strokeStyle = "#713f12";
-      ctx.stroke();
-
-      // Eye
-      ctx.fillStyle = "#ffffff";
-      ctx.beginPath();
-      ctx.arc(6, -4, 5.5, 0, Math.PI * 2);
+      ctx.arc(2, -15, 5.5, 0, Math.PI * 2);
       ctx.fill();
       ctx.stroke();
 
-      ctx.fillStyle = "#0f172a";
+      // Beanie crown
+      ctx.fillStyle = "#2563eb";
       ctx.beginPath();
-      ctx.arc(7.5, -4, 2.3, 0, Math.PI * 2);
-      ctx.fill();
-
-      // Beak
-      ctx.fillStyle = "#f97316";
-      ctx.beginPath();
-      ctx.moveTo(12, 0);
-      ctx.lineTo(23, 3);
-      ctx.lineTo(12, 7);
+      ctx.arc(2, 1, 13.5, Math.PI, 0);
       ctx.closePath();
       ctx.fill();
       ctx.stroke();
 
-      // Wing
-      ctx.fillStyle = "#fef08a";
+      // Knit stripe
+      ctx.strokeStyle = "#93c5fd";
+      ctx.lineWidth = 1.6;
       ctx.beginPath();
-      ctx.ellipse(-4, 3, 7, 4.5, -0.2, 0, Math.PI * 2);
+      ctx.moveTo(-9.5, -5.5);
+      ctx.lineTo(13.5, -5.5);
+      ctx.stroke();
+
+      // Folded ribbed cuff
+      ctx.fillStyle = "#1d4ed8";
+      ctx.strokeStyle = "#1e293b";
+      ctx.lineWidth = 2.2;
+      ctx.beginPath();
+      ctx.roundRect(-12, -1.5, 28, 6, 3);
       ctx.fill();
       ctx.stroke();
+
+      // Ribbed vertical lines
+      ctx.strokeStyle = "#1e3a8a";
+      ctx.lineWidth = 1.4;
+      for (let rx = -8; rx <= 12; rx += 5) {
+        ctx.beginPath();
+        ctx.moveTo(rx, -1);
+        ctx.lineTo(rx, 4);
+        ctx.stroke();
+      }
+
+      ctx.restore();
+    }
+
+    function drawFullBodyDownJacket() {
+      // Full-body quilted down jacket enveloping the chubby torso & back
+      ctx.save();
+      ctx.translate(-1, 3);
+      ctx.rotate(-0.04);
+
+      ctx.fillStyle = "#ef4444";
+      ctx.strokeStyle = "#1e293b";
+      ctx.lineWidth = 2.5;
+
+      // Full round puffy body shell
+      ctx.beginPath();
+      ctx.ellipse(-1, 1, 23.5, 19, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+
+      // Quilted vertical baffle lines across the full jacket
+      ctx.strokeStyle = "#991b1b";
+      ctx.lineWidth = 1.8;
+      for (const bx of [-14, -6, 2, 10]) {
+        ctx.beginPath();
+        ctx.moveTo(bx, -15);
+        ctx.quadraticCurveTo(bx + 1.5, 1, bx, 17);
+        ctx.stroke();
+      }
+
+      // Cozy high collar around neck
+      ctx.fillStyle = "#dc2626";
+      ctx.strokeStyle = "#1e293b";
+      ctx.lineWidth = 2.2;
+      ctx.beginPath();
+      ctx.roundRect(-11, -18, 22, 7, 3.5);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.restore();
+    }
+
+    function drawHotChocolateMug() {
+      ctx.save();
+      ctx.translate(18, 9);
+
+      // Mug handle
+      ctx.strokeStyle = "#1e293b";
+      ctx.lineWidth = 2.2;
+      ctx.beginPath();
+      ctx.arc(6.5, 0, 3.6, -Math.PI / 2, Math.PI / 2);
+      ctx.stroke();
+
+      // Ceramic mug body
+      ctx.fillStyle = "#fef3c7";
+      ctx.strokeStyle = "#1e293b";
+      ctx.lineWidth = 2.2;
+      ctx.beginPath();
+      ctx.roundRect(-6, -6, 12, 12, 2.5);
+      ctx.fill();
+      ctx.stroke();
+
+      // Rich hot chocolate liquid top
+      ctx.fillStyle = "#5c2c16";
+      ctx.beginPath();
+      ctx.ellipse(0, -5.5, 4.8, 1.8, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Floating marshmallows
+      ctx.fillStyle = "#ffffff";
+      ctx.beginPath();
+      ctx.roundRect(-3.2, -7.5, 3, 2.6, 0.8);
+      ctx.roundRect(0.6, -7.2, 2.8, 2.5, 0.8);
+      ctx.fill();
+
+      ctx.restore();
+    }
+
+    function drawSeal() {
+      ctx.save();
+      ctx.translate(seal.x, seal.y);
+      ctx.rotate(seal.rotation);
+
+      const wag = state === "playing" ? Math.sin(frames * 0.25) * 0.2 : 0;
+
+      // Tail flippers
+      ctx.save();
+      ctx.translate(-22, 7);
+      ctx.rotate(wag);
+      ctx.fillStyle = "#64748b";
+      ctx.strokeStyle = "#1e293b";
+      ctx.lineWidth = 2.4;
+      ctx.beginPath();
+      ctx.ellipse(-5, -2, 7.5, 4, -0.35, 0, Math.PI * 2);
+      ctx.ellipse(-5, 4.5, 7.5, 4, 0.35, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+
+      // Base seal body
+      ctx.fillStyle = "#94a3b8";
+      ctx.strokeStyle = "#1e293b";
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.ellipse(-1, 2, 22, 18, -0.04, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+
+      // Full-body quilted down jacket covering the body
+      drawFullBodyDownJacket();
+
+      // Soft rosy cheek blush
+      ctx.fillStyle = "rgba(251, 113, 133, 0.45)";
+      ctx.beginPath();
+      ctx.ellipse(9, 4.5, 4.5, 2.8, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Jacket-sleeved flipper
+      ctx.save();
+      ctx.translate(-2, 10);
+      ctx.rotate(seal.flipperAngle);
+      ctx.fillStyle = "#dc2626";
+      ctx.strokeStyle = "#1e293b";
+      ctx.lineWidth = 2.2;
+      ctx.beginPath();
+      ctx.ellipse(-2, 6, 9, 5, 0.55, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+
+      // Plump snout / muzzle
+      ctx.fillStyle = "#cbd5e1";
+      ctx.strokeStyle = "#1e293b";
+      ctx.lineWidth = 2.4;
+      ctx.beginPath();
+      ctx.ellipse(16.5, 3, 8.5, 6.5, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+
+      // Cute button nose
+      ctx.fillStyle = "#0f172a";
+      ctx.beginPath();
+      ctx.ellipse(23.5, 1, 3.6, 2.7, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Big glossy puppy eye
+      ctx.fillStyle = "#0f172a";
+      ctx.beginPath();
+      ctx.arc(8.5, -4.5, 6.2, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Primary eye catchlight
+      ctx.fillStyle = "#ffffff";
+      ctx.beginPath();
+      ctx.arc(10.5, -6.8, 2.4, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Secondary lower catchlight for puppy-eye sparkle
+      ctx.beginPath();
+      ctx.arc(6.6, -2.5, 1.2, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Whiskers
+      ctx.strokeStyle = "#334155";
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      ctx.moveTo(16, 2.5);
+      ctx.lineTo(25, -2);
+      ctx.moveTo(16, 4);
+      ctx.lineTo(26, 3);
+      ctx.moveTo(15, 5.5);
+      ctx.lineTo(24, 9);
+      ctx.moveTo(14, 6.5);
+      ctx.lineTo(20, 12);
+      ctx.stroke();
+
+      // Winter beanie & hot chocolate mug
+      drawWinterBeanie();
+      drawHotChocolateMug();
 
       ctx.restore();
     }
@@ -314,12 +725,12 @@
         ctx.fillStyle = "#ffffff";
         ctx.fillText(String(score), canvas.width / 2, 72);
       } else if (state === "start") {
-        ctx.font = "bold 36px system-ui, sans-serif";
+        ctx.font = "bold 32px system-ui, sans-serif";
         ctx.lineWidth = 5;
         ctx.strokeStyle = "#0f172a";
-        ctx.strokeText("FLAPPY BIRD", canvas.width / 2, 165);
+        ctx.strokeText("SNOWY LOG SEAL", canvas.width / 2, 165);
         ctx.fillStyle = "#ffffff";
-        ctx.fillText("FLAPPY BIRD", canvas.width / 2, 165);
+        ctx.fillText("SNOWY LOG SEAL", canvas.width / 2, 165);
 
         ctx.font = "600 18px system-ui, sans-serif";
         ctx.fillStyle = "#0f172a";
@@ -349,9 +760,10 @@
     function loop() {
       update();
       drawBackground();
-      drawPipes();
+      drawLogs();
       drawGround();
-      drawBird();
+      drawSteam();
+      drawSeal();
       drawUI();
       requestAnimationFrame(loop);
     }
@@ -360,4 +772,3 @@
   </script>
 </body>
 </html>
-        
