@@ -3,351 +3,406 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Atomic Breath Chubby Log Seal</title>
+  <title>Wind Archer Cookie — Forest Vine Flight</title>
   <style>
     * {
       box-sizing: border-box;
       margin: 0;
       padding: 0;
     }
+
     body {
+      min-height: 100vh;
       display: flex;
       flex-direction: column;
-      justify-content: center;
       align-items: center;
-      min-height: 100vh;
+      justify-content: center;
       gap: 12px;
-      background: #0f172a;
-      font-family: system-ui, -apple-system, sans-serif;
+      background: radial-gradient(circle at top, #134e4a, #06181a 75%);
+      font-family: "Trebuchet MS", "Segoe UI", system-ui, sans-serif;
+      color: #ecfdf5;
+      user-select: none;
     }
+
+    .game-shell {
+      position: relative;
+      border-radius: 16px;
+      padding: 6px;
+      background: linear-gradient(135deg, #4ade80, #15803d 45%, #86efac 100%);
+      box-shadow: 0 22px 50px rgba(0, 0, 0, 0.65), 0 0 28px rgba(74, 222, 128, 0.25);
+    }
+
     canvas {
-      border: 3px solid #1e293b;
+      display: block;
       border-radius: 12px;
-      background: #bae6fd;
-      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5);
+      background: #0b2623;
       cursor: pointer;
     }
-    .controls-bar {
+
+    .hud-bar {
+      width: 420px;
+      max-width: 95vw;
       display: flex;
-      gap: 10px;
       align-items: center;
-      color: #e2e8f0;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 8px 12px;
+      border-radius: 12px;
+      background: rgba(6, 28, 28, 0.85);
+      border: 1px solid rgba(74, 222, 128, 0.35);
       font-size: 13px;
     }
-    button {
-      background: #0284c7;
-      color: #ffffff;
-      border: 1px solid #38bdf8;
+
+    .skill-btn {
+      padding: 7px 13px;
       border-radius: 8px;
-      padding: 7px 14px;
-      font-weight: 600;
+      border: 1px solid #86efac;
+      background: linear-gradient(180deg, #22c55e, #15803d);
+      color: #ffffff;
+      font-weight: 700;
+      font-size: 12px;
+      letter-spacing: 0.3px;
       cursor: pointer;
+      transition: transform 0.08s ease, filter 0.15s ease, opacity 0.15s ease;
     }
-    button:hover:not(:disabled) {
-      background: #0369a1;
+
+    .skill-btn:hover:not(:disabled) {
+      filter: brightness(1.1);
+      transform: translateY(-1px);
     }
-    button:disabled {
-      opacity: 0.6;
+
+    .skill-btn:active:not(:disabled) {
+      transform: translateY(1px);
+    }
+
+    .skill-btn:disabled {
+      opacity: 0.58;
       cursor: not-allowed;
+      background: linear-gradient(180deg, #334155, #1e293b);
+      border-color: #64748b;
+    }
+
+    .hints {
+      color: #bbf7d0;
+      font-size: 12px;
+      text-align: right;
+      line-height: 1.35;
     }
   </style>
 </head>
 <body>
-  <canvas id="gameCanvas" width="400" height="600"></canvas>
-  <div class="controls-bar">
-    <button id="atomicBtn" type="button">Atomic Breath [F / Shift]</button>
-    <span>Flap: Space / Up / Click</span>
+  <div class="game-shell">
+    <canvas id="gameCanvas" width="420" height="620"></canvas>
+  </div>
+
+  <div class="hud-bar">
+    <button id="windArrowBtn" class="skill-btn" type="button">
+      Wind Arrow Ready [F]
+    </button>
+    <div class="hints">
+      <div><strong>Flap:</strong> Space / Up / Click</div>
+      <div><strong>Arrow (2x Smash):</strong> F / Shift / Right-Click</div>
+    </div>
   </div>
 
   <script>
     const canvas = document.getElementById("gameCanvas");
     const ctx = canvas.getContext("2d");
-    const atomicBtn = document.getElementById("atomicBtn");
+    const windArrowBtn = document.getElementById("windArrowBtn");
 
-    // Game constants
-    const GRAVITY = 0.45;
-    const JUMP_FORCE = -7.8;
-    const BOOST_JUMP_FORCE = -10.2;
-    const LOG_WIDTH = 62;
-    const LOG_GAP = 152;
-    const BASE_LOG_SPEED = 2.4;
+    // World & gameplay constants
+    const WIDTH = canvas.width;
+    const HEIGHT = canvas.height;
+    const GROUND_HEIGHT = 86;
+    const PLAY_HEIGHT = HEIGHT - GROUND_HEIGHT;
+
+    const GRAVITY = 0.42;
+    const FLAP_IMPULSE = -7.6;
+    const BOOST_JUMP_IMPULSE = -9.8;
+    const MAX_FALL_SPEED = 9.5;
+
+    const OBSTACLE_WIDTH = 56;
+    const OBSTACLE_GAP = 158;
+    const BASE_OBSTACLE_SPEED = 2.55;
     const SUPER_SPEED_MULTIPLIER = 1.65;
-    const LOG_SPAWN_INTERVAL = 95; // frames
-    const GROUND_HEIGHT = 80;
-    const NOCLIP_WALLS = false;
+    const SPAWN_INTERVAL_FRAMES = 98;
 
-    // Atomic breath constants (5-second cooldown, single obstacle per blast)
-    const ATOMIC_DURATION = 26; // active beam frames
-    const ATOMIC_COOLDOWN_MS = 5000; // 5 seconds
+    // Wind Arrow settings: 4.0s cooldown, destroys up to 2 obstacles
+    const ARROW_COOLDOWN_MS = 4000;
+    const ARROW_SPEED = 11.5;
+    const ARROW_MAX_DESTROYS = 2;
 
-    // Thought bubble & power-up timing
-    const THOUGHT_INTERVAL_MS = 3000; // changes every 3 seconds
-    const POWERUP_DURATION_MS = 4000; // all power-ups last 4 seconds
-
-    const THOUGHTS = [
-      "more cocoa...",
-      "bloop.",
-      "zappy breath!",
-      "so cozy!",
-      "ghost mode!",
-      "snow day!"
-    ];
-
-    const POWERUP_TYPES = ["speed", "strength", "jump", "noclip"];
-
-    // Game state: "start" | "playing" | "gameover"
-    let state = "start";
-    let score = 0;
-    let bestScore = Number(localStorage.getItem("snowyLogChubbySealBestScore") || 0);
-    let frames = 0;
-
-    let atomicTimer = 0;
-    let atomicCooldownRemainingMs = 0;
-    let atomicUsedThisBlast = false;
-    let lastTimestamp = performance.now();
-    let screenShake = 0;
-
-    // Thought bubble state
-    let thoughtIndex = 0;
-    let thoughtTimerMs = 0;
-
-    // Active power-up state: { type: "speed" | "strength" | "jump" | "noclip" | null, remainingMs: number }
-    let activePowerup = { type: null, remainingMs: 0 };
-    let powerups = [];
-
-    const seal = {
-      x: 102,
-      y: canvas.height / 2 - 40,
-      radius: 21,
-      vy: 0,
-      rotation: 0,
-      flipperAngle: 0
+    // Power-up constants
+    const POWERUP_DURATION_MS = 5000;
+    const POWERUP_TYPES = ["strength", "speed", "noclip", "jump"];
+    const POWERUP_META = {
+      strength: {
+        label: "SUPER STRENGTH",
+        badge: "STR",
+        color: "#ef4444",
+        glow: "rgba(239, 68, 68, 0.45)",
+        pillBg: "rgba(127, 29, 29, 0.85)",
+        border: "#fca5a5"
+      },
+      speed: {
+        label: "SUPER SPEED",
+        badge: "SPD",
+        color: "#f59e0b",
+        glow: "rgba(245, 158, 11, 0.45)",
+        pillBg: "rgba(120, 53, 15, 0.85)",
+        border: "#fde68a"
+      },
+      noclip: {
+        label: "NO-CLIP",
+        badge: "GHOST",
+        color: "#a855f7",
+        glow: "rgba(168, 85, 247, 0.45)",
+        pillBg: "rgba(76, 29, 149, 0.85)",
+        border: "#e9d5ff"
+      },
+      jump: {
+        label: "JUMP BOOST",
+        badge: "JUMP",
+        color: "#38bdf8",
+        glow: "rgba(56, 189, 248, 0.45)",
+        pillBg: "rgba(12, 74, 110, 0.85)",
+        border: "#bae6fd"
+      }
     };
 
-    let logs = [];
-    let steamPuffs = [];
-    let debrisParticles = [];
+    // Game state
+    let gameState = "start"; // "start" | "playing" | "gameover"
+    let score = 0;
+    let bestScore = Number(localStorage.getItem("windArcherFlappyBest") || 0);
+    let frames = 0;
+    let lastTime = performance.now();
+    let screenShake = 0;
+    let shootAnimTimer = 0;
 
-    // Scattered background pine trees (with deterministic pseudo-random scatter)
-    const pineTrees = Array.from({ length: 14 }, (_, idx) => {
-      const seed = Math.sin(idx * 91.7 + 13.3) * 10000;
-      const rand = seed - Math.floor(seed);
-      const seed2 = Math.sin(idx * 47.1 + 5.9) * 10000;
-      const rand2 = seed2 - Math.floor(seed2);
+    // Cooldown & power-up state
+    let arrowCooldownRemaining = 0;
+    let activePowerup = { type: null, remainingMs: 0 };
 
-      return {
-        x: idx * 46 + rand * 28,
-        scale: 0.65 + rand2 * 0.65,
-        layer: idx % 2 === 0 ? "back" : "front"
-      };
-    });
+    // Wind Archer Cookie + held companion bird
+    const archer = {
+      x: 112,
+      y: PLAY_HEIGHT * 0.46,
+      radius: 19,
+      vy: 0,
+      tilt: 0,
+      scarfPhase: 0,
+      birdWingPhase: 0,
+      birdFlapBoost: 0
+    };
 
-    // Gentle falling snowflakes
-    const snowflakes = Array.from({ length: 42 }, (_, idx) => {
-      const s1 = Math.sin(idx * 31.4 + 2.1) * 10000;
-      const r1 = s1 - Math.floor(s1);
-      const s2 = Math.sin(idx * 73.9 + 8.7) * 10000;
-      const r2 = s2 - Math.floor(s2);
-      const s3 = Math.sin(idx * 19.3 + 4.4) * 10000;
-      const r3 = s3 - Math.floor(s3);
+    let obstacles = [];
+    let powerupOrbs = [];
+    let arrows = [];
+    let particles = [];
+    let windRibbons = [];
 
-      return {
-        x: r1 * canvas.width,
-        y: r2 * (canvas.height - GROUND_HEIGHT),
-        radius: 1.5 + r3 * 2.2,
-        speedY: 0.7 + r3 * 1.1,
-        driftPhase: r1 * Math.PI * 2
-      };
-    });
+    // Rich multi-layer forest background data
+    const farTrees = Array.from({ length: 14 }, (_, i) => ({
+      x: i * 50 + ((i * 23) % 18),
+      trunkW: 14 + (i % 3) * 5,
+      canopyR: 46 + ((i * 19) % 28),
+      yOffset: 75 + ((i * 29) % 75)
+    }));
 
-    function getCurrentJumpForce() {
-      return activePowerup.type === "jump" ? BOOST_JUMP_FORCE : JUMP_FORCE;
+    const midTrees = Array.from({ length: 11 }, (_, i) => ({
+      x: i * 62 + ((i * 31) % 22),
+      trunkW: 20 + (i % 3) * 6,
+      canopyR: 58 + ((i * 27) % 34),
+      yOffset: 55 + ((i * 37) % 65),
+      hasHangingVine: i % 2 === 0
+    }));
+
+    const nearTrees = Array.from({ length: 8 }, (_, i) => ({
+      x: i * 86 + ((i * 43) % 26),
+      trunkW: 26 + (i % 2) * 8,
+      canopyR: 72 + ((i * 23) % 30)
+    }));
+
+    const canopyStrands = Array.from({ length: 15 }, (_, i) => ({
+      x: i * 32 + ((i * 17) % 14),
+      length: 34 + ((i * 29) % 58),
+      phase: i * 0.65
+    }));
+
+    const ambientLeaves = Array.from({ length: 26 }, (_, i) => ({
+      x: (i * 53) % WIDTH,
+      y: (i * 71) % PLAY_HEIGHT,
+      size: 3.5 + (i % 4) * 1.3,
+      speedX: -0.95 - (i % 5) * 0.35,
+      speedY: 0.45 + (i % 3) * 0.25,
+      phase: i * 0.85,
+      color: i % 3 === 0 ? "#4ade80" : i % 3 === 1 ? "#86efac" : "#bbf7d0"
+    }));
+
+    function getCurrentFlapImpulse() {
+      return activePowerup.type === "jump" ? BOOST_JUMP_IMPULSE : FLAP_IMPULSE;
     }
 
-    function getCurrentLogSpeed() {
-      return activePowerup.type === "speed"
-        ? BASE_LOG_SPEED * SUPER_SPEED_MULTIPLIER
-        : BASE_LOG_SPEED;
+    function getCurrentSpeedMultiplier() {
+      return activePowerup.type === "speed" ? SUPER_SPEED_MULTIPLIER : 1.0;
     }
 
-    function resetGame() {
-      seal.x = 102;
-      seal.y = canvas.height / 2 - 40;
-      seal.vy = 0;
-      seal.rotation = 0;
-      seal.flipperAngle = 0;
-      logs = [];
-      powerups = [];
-      steamPuffs = [];
-      debrisParticles = [];
+    function getCurrentObstacleSpeed() {
+      return BASE_OBSTACLE_SPEED * getCurrentSpeedMultiplier();
+    }
+
+    function resetRun() {
+      archer.x = 112;
+      archer.y = PLAY_HEIGHT * 0.46;
+      archer.vy = 0;
+      archer.tilt = 0;
+      archer.scarfPhase = 0;
+      archer.birdWingPhase = 0;
+      archer.birdFlapBoost = 0;
+
+      obstacles = [];
+      powerupOrbs = [];
+      arrows = [];
+      particles = [];
+      windRibbons = [];
+
       score = 0;
       frames = 0;
-      atomicTimer = 0;
-      atomicCooldownRemainingMs = 0;
-      atomicUsedThisBlast = false;
       screenShake = 0;
-      thoughtIndex = 0;
-      thoughtTimerMs = 0;
+      shootAnimTimer = 0;
+      arrowCooldownRemaining = 0;
       activePowerup = { type: null, remainingMs: 0 };
+
+      for (let i = 0; i < 4; i++) {
+        windRibbons.push({
+          x: Math.random() * WIDTH,
+          y: 70 + Math.random() * (PLAY_HEIGHT - 140),
+          len: 35 + Math.random() * 45,
+          speed: 2.2 + Math.random() * 1.8,
+          alpha: 0.16 + Math.random() * 0.16
+        });
+      }
     }
 
     function flap() {
-      if (state === "start") {
-        resetGame();
-        state = "playing";
-        seal.vy = getCurrentJumpForce();
-        seal.flipperAngle = -0.7;
-      } else if (state === "playing") {
-        seal.vy = getCurrentJumpForce();
-        seal.flipperAngle = -0.7;
-      } else if (state === "gameover") {
-        resetGame();
-        state = "playing";
-        seal.vy = getCurrentJumpForce();
-        seal.flipperAngle = -0.7;
+      if (gameState === "start") {
+        resetRun();
+        gameState = "playing";
+        archer.vy = getCurrentFlapImpulse();
+        archer.birdFlapBoost = 1.0;
+        spawnWindBurst(archer.x - 10, archer.y + 8, 8, "#86efac");
+      } else if (gameState === "playing") {
+        archer.vy = getCurrentFlapImpulse();
+        archer.birdFlapBoost = 1.0;
+        const burstColor = activePowerup.type === "jump" ? "#38bdf8" : "#bbf7d0";
+        spawnWindBurst(archer.x - 12, archer.y + 8, 7, burstColor);
+      } else if (gameState === "gameover") {
+        resetRun();
+        gameState = "playing";
+        archer.vy = getCurrentFlapImpulse();
+        archer.birdFlapBoost = 1.0;
       }
     }
 
-    function triggerAtomicBreath() {
-      if (state !== "playing") return;
-      if (atomicCooldownRemainingMs > 0 || atomicTimer > 0) return;
-      atomicTimer = ATOMIC_DURATION;
-      atomicCooldownRemainingMs = ATOMIC_COOLDOWN_MS;
-      atomicUsedThisBlast = false;
-      screenShake = 7;
+    function shootWindArrow() {
+      if (gameState !== "playing") return;
+      if (arrowCooldownRemaining > 0) return;
+
+      arrowCooldownRemaining = ARROW_COOLDOWN_MS;
+      shootAnimTimer = 14;
+      screenShake = Math.max(screenShake, 4.5);
+
+      const bowTipX = archer.x + 27;
+      const bowTipY = archer.y - 1;
+
+      arrows.push({
+        x: bowTipX,
+        y: bowTipY,
+        vx: ARROW_SPEED,
+        vy: archer.vy * 0.08,
+        angle: Math.atan2(archer.vy * 0.08, ARROW_SPEED),
+        destroysLeft: ARROW_MAX_DESTROYS,
+        hitIds: new Set(),
+        trail: []
+      });
+
+      spawnWindBurst(bowTipX, bowTipY, 12, "#4ade80");
     }
 
-    window.addEventListener("keydown", (e) => {
-      if (e.code === "Space" || e.code === "ArrowUp") {
-        e.preventDefault();
-        flap();
-      } else if (e.code === "KeyF" || e.code === "ShiftLeft" || e.code === "ShiftRight") {
-        e.preventDefault();
-        triggerAtomicBreath();
+    function spawnWindBurst(x, y, count, color) {
+      for (let i = 0; i < count; i++) {
+        const ang = Math.random() * Math.PI * 2;
+        const spd = 1.2 + Math.random() * 3.6;
+        particles.push({
+          x,
+          y,
+          vx: Math.cos(ang) * spd - 1.2,
+          vy: Math.sin(ang) * spd,
+          size: 2.5 + Math.random() * 3.5,
+          life: 18 + Math.floor(Math.random() * 12),
+          maxLife: 30,
+          color,
+          type: "spark"
+        });
       }
-    });
+    }
 
-    canvas.addEventListener("pointerdown", (e) => {
-      if (e.button === 2) {
-        e.preventDefault();
-        triggerAtomicBreath();
-      } else {
-        flap();
+    function spawnObstacleDebris(x, y, w, h) {
+      const palette = ["#4ade80", "#16a34a", "#15803d", "#a3e635", "#bbf7d0"];
+      const count = 22;
+      for (let i = 0; i < count; i++) {
+        const px = x + Math.random() * w;
+        const py = y + Math.random() * h;
+        const ang = -Math.PI * 0.85 + Math.random() * Math.PI * 0.7;
+        const spd = 2.2 + Math.random() * 5.2;
+        particles.push({
+          x: px,
+          y: py,
+          vx: Math.cos(ang) * spd,
+          vy: Math.sin(ang) * spd - 1.5,
+          w: 5 + Math.random() * 7,
+          h: 4 + Math.random() * 5,
+          rot: Math.random() * Math.PI * 2,
+          vRot: -0.25 + Math.random() * 0.5,
+          life: 28 + Math.floor(Math.random() * 14),
+          maxLife: 42,
+          color: palette[i % palette.length],
+          type: "chunk"
+        });
       }
-    });
+    }
 
-    canvas.addEventListener("contextmenu", (e) => e.preventDefault());
-    atomicBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      triggerAtomicBreath();
-    });
+    let nextObstacleId = 1;
+    function spawnObstaclePair() {
+      const minTop = 54;
+      const maxTop = PLAY_HEIGHT - OBSTACLE_GAP - 54;
+      const topHeight = Math.floor(Math.random() * (maxTop - minTop + 1)) + minTop;
+      const bottomY = topHeight + OBSTACLE_GAP;
 
-    function spawnLog() {
-      const minTopHeight = 50;
-      const maxTopHeight = canvas.height - GROUND_HEIGHT - LOG_GAP - 50;
-      const topHeight =
-        Math.floor(Math.random() * (maxTopHeight - minTopHeight + 1)) + minTopHeight;
-      const bottomY = topHeight + LOG_GAP;
-
-      logs.push({
-        x: canvas.width,
+      obstacles.push({
+        id: nextObstacleId++,
+        x: WIDTH + 10,
         topHeight,
         bottomY,
         topDestroyed: false,
         bottomDestroyed: false,
-        passed: false
+        passed: false,
+        swayPhase: Math.random() * Math.PI * 2
       });
 
-      // Spawn a collectible power-up orb in the gap on every second log set
-      if (frames % (LOG_SPAWN_INTERVAL * 2) === 0) {
+      if (nextObstacleId % 2 === 1) {
         const type = POWERUP_TYPES[Math.floor(Math.random() * POWERUP_TYPES.length)];
-        powerups.push({
-          x: canvas.width + LOG_WIDTH / 2,
-          y: topHeight + LOG_GAP / 2,
-          radius: 14,
+        powerupOrbs.push({
+          x: WIDTH + 10 + OBSTACLE_WIDTH * 0.5,
+          y: topHeight + OBSTACLE_GAP * 0.5,
+          radius: 15,
           type,
-          phase: Math.random() * Math.PI * 2,
-          collected: false
+          bobPhase: Math.random() * Math.PI * 2
         });
       }
     }
 
-    function getMugTopWorldPos() {
-      const fCos = Math.cos(seal.flipperAngle);
-      const fSin = Math.sin(seal.flipperAngle);
-      const mugXInFlipper = 4;
-      const mugTopYInFlipper = 2;
-      const localX = -2 + mugXInFlipper * fCos - mugTopYInFlipper * fSin;
-      const localY = 10 + mugXInFlipper * fSin + mugTopYInFlipper * fCos;
-
-      const sCos = Math.cos(seal.rotation);
-      const sSin = Math.sin(seal.rotation);
-      return {
-        x: seal.x + localX * sCos - localY * sSin,
-        y: seal.y + localX * sSin + localY * sCos
-      };
-    }
-
-    function spawnSteam() {
-      if (steamPuffs.length > 35) return;
-      const mugTop = getMugTopWorldPos();
-
-      steamPuffs.push({
-        x: mugTop.x + (-2 + Math.random() * 4),
-        y: mugTop.y,
-        vx: -0.7 - Math.random() * 0.7,
-        vy: -0.9 - Math.random() * 0.7,
-        radius: 2.5 + Math.random() * 2.2,
-        life: 24 + Math.floor(Math.random() * 12)
-      });
-    }
-
-    function spawnDebris(x, y, count = 14) {
-      const colors = ["#7c4a2d", "#deb887", "#38bdf8", "#facc15"];
-      for (let i = 0; i < count; i++) {
-        const angle = -Math.PI * 0.65 + Math.random() * Math.PI * 1.3;
-        const speed = 1.8 + Math.random() * 4.5;
-        debrisParticles.push({
-          x,
-          y,
-          vx: Math.cos(angle) * speed,
-          vy: Math.sin(angle) * speed,
-          w: 4 + Math.random() * 6,
-          h: 3 + Math.random() * 4,
-          rot: Math.random() * Math.PI * 2,
-          vRot: -0.25 + Math.random() * 0.5,
-          life: 24 + Math.floor(Math.random() * 14),
-          color: colors[Math.floor(Math.random() * colors.length)]
-        });
-      }
-    }
-
-    function getBeamOrigin() {
-      const cos = Math.cos(seal.rotation);
-      const sin = Math.sin(seal.rotation);
-      const localX = 25;
-      const localY = 2;
-      return {
-        x: seal.x + localX * cos - localY * sin,
-        y: seal.y + localX * sin + localY * cos
-      };
-    }
-
-    function beamHitsRect(ox, oy, angle, rx, ry, rw, rh) {
-      const maxLen = canvas.width - ox + 30;
-      const dx = Math.cos(angle);
-      const dy = Math.sin(angle);
-      for (let dist = 0; dist <= maxLen; dist += 10) {
-        const px = ox + dx * dist;
-        const py = oy + dy * dist;
-        if (px >= rx && px <= rx + rw && py >= ry && py <= ry + rh) {
-          return { hit: true, x: px, y: py };
-        }
-      }
-      return { hit: false, x: 0, y: 0 };
-    }
-
-    function circleRectCollision(cx, cy, cr, rx, ry, rw, rh) {
+    function circleIntersectsRect(cx, cy, cr, rx, ry, rw, rh) {
       const closestX = Math.max(rx, Math.min(cx, rx + rw));
       const closestY = Math.max(ry, Math.min(cy, ry + rh));
       const dx = cx - closestX;
@@ -355,56 +410,114 @@
       return dx * dx + dy * dy < cr * cr;
     }
 
-    function update(dtMs) {
-      const snowFrames = state === "playing" ? frames : frames * 0.35;
-      for (const flake of snowflakes) {
-        flake.y += flake.speedY;
-        flake.x += Math.sin(snowFrames * 0.04 + flake.driftPhase) * 0.5;
-        if (flake.y > canvas.height - GROUND_HEIGHT) {
-          flake.y = -5;
-          flake.x = (flake.x + canvas.width) % canvas.width;
-        }
-        if (flake.x < 0) flake.x += canvas.width;
-        if (flake.x > canvas.width) flake.x -= canvas.width;
-      }
-
-      if (screenShake > 0) {
-        screenShake *= 0.85;
-        if (screenShake < 0.2) screenShake = 0;
-      }
-
-      for (let i = debrisParticles.length - 1; i >= 0; i--) {
-        const d = debrisParticles[i];
-        d.x += d.vx;
-        d.y += d.vy;
-        d.vy += 0.22;
-        d.rot += d.vRot;
-        d.life--;
-        if (d.life <= 0) {
-          debrisParticles.splice(i, 1);
+    function segmentIntersectsRect(x1, y1, x2, y2, rx, ry, rw, rh) {
+      const steps = 6;
+      for (let i = 0; i <= steps; i++) {
+        const t = i / steps;
+        const px = x1 + (x2 - x1) * t;
+        const py = y1 + (y2 - y1) * t;
+        if (px >= rx - 8 && px <= rx + rw + 8 && py >= ry - 8 && py <= ry + rh + 8) {
+          return true;
         }
       }
+      return false;
+    }
 
-      if (state !== "playing") {
-        atomicBtn.disabled = true;
-        atomicBtn.textContent = "Atomic Breath [F / Shift]";
+    function triggerGameOver() {
+      if (gameState === "gameover") return;
+      gameState = "gameover";
+      activePowerup = { type: null, remainingMs: 0 };
+      screenShake = 8;
+      spawnWindBurst(archer.x, archer.y, 18, "#86efac");
+    }
+
+    function updateHudButton() {
+      if (gameState !== "playing") {
+        windArrowBtn.disabled = true;
+        windArrowBtn.textContent = "Wind Arrow Ready [F]";
         return;
       }
 
-      frames++;
-      if (atomicTimer > 0) atomicTimer--;
-      if (atomicCooldownRemainingMs > 0) {
-        atomicCooldownRemainingMs = Math.max(0, atomicCooldownRemainingMs - dtMs);
+      if (arrowCooldownRemaining > 0) {
+        windArrowBtn.disabled = true;
+        const sec = (arrowCooldownRemaining / 1000).toFixed(1);
+        windArrowBtn.textContent = `Wind Arrow (${sec}s)`;
+      } else {
+        windArrowBtn.disabled = false;
+        windArrowBtn.textContent = "Wind Arrow Ready [F]";
+      }
+    }
+
+    function update(dtMs) {
+      const dtScale = Math.min(2.0, dtMs / (1000 / 60));
+
+      const baseEnvMult = gameState === "playing" ? 1.0 : 0.45;
+      const speedMult = gameState === "playing" ? baseEnvMult * getCurrentSpeedMultiplier() : baseEnvMult;
+
+      for (const leaf of ambientLeaves) {
+        leaf.x += leaf.speedX * speedMult * dtScale;
+        leaf.y += (leaf.speedY + Math.sin(frames * 0.04 + leaf.phase) * 0.35) * dtScale;
+        if (leaf.x < -12) {
+          leaf.x = WIDTH + 12;
+          leaf.y = Math.random() * PLAY_HEIGHT;
+        }
+        if (leaf.y > PLAY_HEIGHT - 6) {
+          leaf.y = 0;
+        }
       }
 
-      // Cycle thought bubble every 3 seconds
-      thoughtTimerMs += dtMs;
-      if (thoughtTimerMs >= THOUGHT_INTERVAL_MS) {
-        thoughtTimerMs %= THOUGHT_INTERVAL_MS;
-        thoughtIndex = (thoughtIndex + 1) % THOUGHTS.length;
+      for (const rib of windRibbons) {
+        rib.x -= rib.speed * speedMult * dtScale;
+        if (rib.x + rib.len < 0) {
+          rib.x = WIDTH + 20;
+          rib.y = 55 + Math.random() * (PLAY_HEIGHT - 120);
+        }
       }
 
-      // Tick active 4-second power-up timer
+      for (let i = particles.length - 1; i >= 0; i--) {
+        const p = particles[i];
+        p.x += p.vx * dtScale;
+        p.y += p.vy * dtScale;
+        if (p.type === "chunk") {
+          p.vy += 0.24 * dtScale;
+          p.rot += p.vRot * dtScale;
+        }
+        p.life -= dtScale;
+        if (p.life <= 0) {
+          particles.splice(i, 1);
+        }
+      }
+
+      if (screenShake > 0) {
+        screenShake *= Math.pow(0.84, dtScale);
+        if (screenShake < 0.2) screenShake = 0;
+      }
+
+      if (shootAnimTimer > 0) {
+        shootAnimTimer = Math.max(0, shootAnimTimer - dtScale);
+      }
+
+      if (gameState === "start") {
+        frames += dtScale;
+        archer.y = PLAY_HEIGHT * 0.46 + Math.sin(frames * 0.07) * 8;
+        archer.tilt = Math.sin(frames * 0.07) * 0.08;
+        archer.scarfPhase += 0.16 * dtScale;
+        archer.birdWingPhase += 0.22 * dtScale;
+        updateHudButton();
+        return;
+      }
+
+      if (gameState !== "playing") {
+        updateHudButton();
+        return;
+      }
+
+      frames += dtScale;
+
+      if (arrowCooldownRemaining > 0) {
+        arrowCooldownRemaining = Math.max(0, arrowCooldownRemaining - dtMs);
+      }
+
       if (activePowerup.type) {
         activePowerup.remainingMs = Math.max(0, activePowerup.remainingMs - dtMs);
         if (activePowerup.remainingMs <= 0) {
@@ -412,609 +525,697 @@
         }
       }
 
-      const secLeft = (atomicCooldownRemainingMs / 1000).toFixed(1);
-      atomicBtn.disabled = atomicCooldownRemainingMs > 0 || atomicTimer > 0;
-      atomicBtn.textContent =
-        atomicCooldownRemainingMs > 0
-          ? `Cooldown: ${secLeft}s`
-          : "Atomic Breath [F / Shift]";
+      updateHudButton();
 
-      // Seal physics
-      seal.vy += GRAVITY;
-      seal.y += seal.vy;
-      seal.rotation = Math.max(-0.38, Math.min(Math.PI / 2, seal.vy * 0.07));
-      seal.flipperAngle += (0.15 - seal.flipperAngle) * 0.14;
+      archer.vy = Math.min(MAX_FALL_SPEED + (activePowerup.type === "jump" ? 1.5 : 0), archer.vy + GRAVITY * dtScale);
+      archer.y += archer.vy * dtScale;
+      archer.tilt = Math.max(-0.45, Math.min(Math.PI * 0.44, archer.vy * 0.068));
+      archer.scarfPhase += (activePowerup.type === "speed" ? 0.38 : 0.24) * dtScale;
 
-      if (frames % 7 === 0) {
-        spawnSteam();
+      if (archer.birdFlapBoost > 0) {
+        archer.birdFlapBoost = Math.max(0, archer.birdFlapBoost - 0.05 * dtScale);
+        archer.birdWingPhase += 0.55 * dtScale;
+      } else {
+        archer.birdWingPhase += 0.18 * dtScale;
       }
 
-      for (let i = steamPuffs.length - 1; i >= 0; i--) {
-        const sp = steamPuffs[i];
-        sp.x += sp.vx + Math.sin(frames * 0.15 + i) * 0.25;
-        sp.y += sp.vy;
-        sp.radius += 0.05;
-        sp.life--;
-        if (sp.life <= 0) {
-          steamPuffs.splice(i, 1);
-        }
+      if (archer.y - archer.radius < 4) {
+        archer.y = 4 + archer.radius;
+        if (archer.vy < 0) archer.vy = 0;
       }
 
-      if (seal.y - seal.radius < 0) {
-        seal.y = seal.radius;
-        seal.vy = 0;
-      }
-
-      if (seal.y + seal.radius >= canvas.height - GROUND_HEIGHT) {
-        seal.y = canvas.height - GROUND_HEIGHT - seal.radius;
-        endGame();
+      if (archer.y + archer.radius >= PLAY_HEIGHT) {
+        archer.y = PLAY_HEIGHT - archer.radius;
+        triggerGameOver();
         return;
       }
 
-      if (frames % LOG_SPAWN_INTERVAL === 0) {
-        spawnLog();
+      if (Math.floor(frames) % SPAWN_INTERVAL_FRAMES === 0 && frames - Math.floor(frames) < dtScale) {
+        spawnObstaclePair();
       }
 
-      const currentSpeed = getCurrentLogSpeed();
-      const groundY = canvas.height - GROUND_HEIGHT;
+      const obstacleSpeed = getCurrentObstacleSpeed();
 
-      // Move & collect power-up orbs
-      for (let i = powerups.length - 1; i >= 0; i--) {
-        const p = powerups[i];
-        p.x -= currentSpeed;
-        p.phase += 0.08;
-        const bobY = p.y + Math.sin(p.phase) * 5;
+      for (let i = powerupOrbs.length - 1; i >= 0; i--) {
+        const orb = powerupOrbs[i];
+        orb.x -= obstacleSpeed * dtScale;
+        orb.bobPhase += 0.08 * dtScale;
+        const bobY = orb.y + Math.sin(orb.bobPhase) * 6;
 
-        const dx = seal.x - p.x;
-        const dy = seal.y - bobY;
-        if (dx * dx + dy * dy <= (seal.radius + p.radius) ** 2) {
-          activePowerup = { type: p.type, remainingMs: POWERUP_DURATION_MS };
-          spawnDebris(p.x, bobY, 10);
-          powerups.splice(i, 1);
+        const dx = archer.x - orb.x;
+        const dy = archer.y - bobY;
+        if (dx * dx + dy * dy <= (archer.radius + orb.radius) ** 2) {
+          activePowerup = { type: orb.type, remainingMs: POWERUP_DURATION_MS };
+          const meta = POWERUP_META[orb.type];
+          screenShake = Math.max(screenShake, 4);
+          spawnWindBurst(orb.x, bobY, 16, meta.color);
+          powerupOrbs.splice(i, 1);
           continue;
         }
 
-        if (p.x < -30) {
-          powerups.splice(i, 1);
+        if (orb.x < -40) {
+          powerupOrbs.splice(i, 1);
         }
       }
 
-      const beamOrigin = atomicTimer > 0 && !atomicUsedThisBlast ? getBeamOrigin() : null;
+      for (let i = arrows.length - 1; i >= 0; i--) {
+        const ar = arrows[i];
+        ar.trail.push({ x: ar.x, y: ar.y });
+        if (ar.trail.length > 9) ar.trail.shift();
 
-      let bestTarget = null;
-      if (beamOrigin) {
-        for (const l of logs) {
-          const bottomHeight = groundY - l.bottomY;
+        const prevX = ar.x;
+        const prevY = ar.y;
+        ar.x += ar.vx * dtScale;
+        ar.y += ar.vy * dtScale;
 
-          if (!l.topDestroyed && l.topHeight > 0) {
-            const topHit = beamHitsRect(
-              beamOrigin.x,
-              beamOrigin.y,
-              seal.rotation,
-              l.x,
-              0,
-              LOG_WIDTH,
-              l.topHeight
-            );
-            if (topHit.hit) {
-              const dist = Math.hypot(topHit.x - beamOrigin.x, topHit.y - beamOrigin.y);
-              if (!bestTarget || dist < bestTarget.dist) {
-                bestTarget = { log: l, part: "top", x: topHit.x, y: topHit.y, dist };
-              }
-            }
+        if (Math.random() < 0.65) {
+          particles.push({
+            x: ar.x - 8,
+            y: ar.y + (Math.random() - 0.5) * 6,
+            vx: -2.2 - Math.random() * 1.5,
+            vy: (Math.random() - 0.5) * 1.4,
+            size: 2.2 + Math.random() * 2.5,
+            life: 12,
+            maxLife: 12,
+            color: "#86efac",
+            type: "spark"
+          });
+        }
+
+        for (const obs of obstacles) {
+          if (ar.destroysLeft <= 0) break;
+
+          const topKey = `${obs.id}-top`;
+          if (
+            !obs.topDestroyed &&
+            obs.topHeight > 0 &&
+            !ar.hitIds.has(topKey) &&
+            segmentIntersectsRect(prevX, prevY, ar.x, ar.y, obs.x, 0, OBSTACLE_WIDTH, obs.topHeight)
+          ) {
+            obs.topDestroyed = true;
+            ar.hitIds.add(topKey);
+            ar.destroysLeft--;
+            screenShake = Math.max(screenShake, 5.5);
+            spawnObstacleDebris(obs.x, 0, OBSTACLE_WIDTH, obs.topHeight);
+            spawnWindBurst(obs.x + OBSTACLE_WIDTH / 2, obs.topHeight, 12, "#4ade80");
+            if (ar.destroysLeft <= 0) break;
           }
 
-          if (!l.bottomDestroyed && bottomHeight > 0) {
-            const botHit = beamHitsRect(
-              beamOrigin.x,
-              beamOrigin.y,
-              seal.rotation,
-              l.x,
-              l.bottomY,
-              LOG_WIDTH,
-              bottomHeight
-            );
-            if (botHit.hit) {
-              const dist = Math.hypot(botHit.x - beamOrigin.x, botHit.y - beamOrigin.y);
-              if (!bestTarget || dist < bestTarget.dist) {
-                bestTarget = { log: l, part: "bottom", x: botHit.x, y: botHit.y, dist };
-              }
-            }
+          const botKey = `${obs.id}-bot`;
+          const botHeight = PLAY_HEIGHT - obs.bottomY;
+          if (
+            !obs.bottomDestroyed &&
+            botHeight > 0 &&
+            !ar.hitIds.has(botKey) &&
+            segmentIntersectsRect(prevX, prevY, ar.x, ar.y, obs.x, obs.bottomY, OBSTACLE_WIDTH, botHeight)
+          ) {
+            obs.bottomDestroyed = true;
+            ar.hitIds.add(botKey);
+            ar.destroysLeft--;
+            screenShake = Math.max(screenShake, 5.5);
+            spawnObstacleDebris(obs.x, obs.bottomY, OBSTACLE_WIDTH, botHeight);
+            spawnWindBurst(obs.x + OBSTACLE_WIDTH / 2, obs.bottomY, 12, "#4ade80");
+            if (ar.destroysLeft <= 0) break;
           }
         }
 
-        if (bestTarget) {
-          if (bestTarget.part === "top") {
-            bestTarget.log.topDestroyed = true;
-          } else {
-            bestTarget.log.bottomDestroyed = true;
-          }
-          atomicUsedThisBlast = true;
-          atomicTimer = 0;
-          screenShake = Math.max(screenShake, 5);
-          spawnDebris(bestTarget.x, bestTarget.y, 14);
+        if (ar.destroysLeft <= 0 || ar.x > WIDTH + 50 || ar.y < -30 || ar.y > PLAY_HEIGHT + 30) {
+          arrows.splice(i, 1);
         }
       }
 
       const hasSuperStrength = activePowerup.type === "strength";
-      const hasNoClip = NOCLIP_WALLS || activePowerup.type === "noclip";
+      const hasNoClip = activePowerup.type === "noclip";
 
-      for (let i = logs.length - 1; i >= 0; i--) {
-        const l = logs[i];
-        l.x -= currentSpeed;
+      for (let i = obstacles.length - 1; i >= 0; i--) {
+        const obs = obstacles[i];
+        obs.x -= obstacleSpeed * dtScale;
+        obs.swayPhase += 0.05 * dtScale;
 
-        const bottomHeight = groundY - l.bottomY;
+        const botHeight = PLAY_HEIGHT - obs.bottomY;
 
         if (!hasNoClip) {
           const hitTop =
-            !l.topDestroyed &&
-            circleRectCollision(seal.x, seal.y, seal.radius - 2, l.x, 0, LOG_WIDTH, l.topHeight);
-
+            !obs.topDestroyed &&
+            circleIntersectsRect(archer.x, archer.y, archer.radius - 2, obs.x, 0, OBSTACLE_WIDTH, obs.topHeight);
           const hitBottom =
-            !l.bottomDestroyed &&
-            circleRectCollision(
-              seal.x,
-              seal.y,
-              seal.radius - 2,
-              l.x,
-              l.bottomY,
-              LOG_WIDTH,
-              bottomHeight
-            );
+            !obs.bottomDestroyed &&
+            circleIntersectsRect(archer.x, archer.y, archer.radius - 2, obs.x, obs.bottomY, OBSTACLE_WIDTH, botHeight);
 
           if (hitTop) {
             if (hasSuperStrength) {
-              l.topDestroyed = true;
-              screenShake = Math.max(screenShake, 6);
-              spawnDebris(l.x + LOG_WIDTH / 2, Math.min(seal.y, l.topHeight), 16);
+              obs.topDestroyed = true;
+              screenShake = Math.max(screenShake, 6.5);
+              spawnObstacleDebris(obs.x, 0, OBSTACLE_WIDTH, obs.topHeight);
+              spawnWindBurst(obs.x + OBSTACLE_WIDTH / 2, Math.min(archer.y, obs.topHeight), 14, "#ef4444");
             } else {
-              endGame();
+              triggerGameOver();
               return;
             }
           }
 
           if (hitBottom) {
             if (hasSuperStrength) {
-              l.bottomDestroyed = true;
-              screenShake = Math.max(screenShake, 6);
-              spawnDebris(l.x + LOG_WIDTH / 2, Math.max(seal.y, l.bottomY), 16);
+              obs.bottomDestroyed = true;
+              screenShake = Math.max(screenShake, 6.5);
+              spawnObstacleDebris(obs.x, obs.bottomY, OBSTACLE_WIDTH, botHeight);
+              spawnWindBurst(obs.x + OBSTACLE_WIDTH / 2, Math.max(archer.y, obs.bottomY), 14, "#ef4444");
             } else {
-              endGame();
+              triggerGameOver();
               return;
             }
           }
         }
 
-        if (!l.passed && l.x + LOG_WIDTH < seal.x) {
-          l.passed = true;
+        if (!obs.passed && obs.x + OBSTACLE_WIDTH < archer.x) {
+          obs.passed = true;
           score++;
           if (score > bestScore) {
             bestScore = score;
-            localStorage.setItem("snowyLogChubbySealBestScore", String(bestScore));
+            localStorage.setItem("windArcherFlappyBest", String(bestScore));
           }
         }
 
-        if (l.x + LOG_WIDTH < -40) {
-          logs.splice(i, 1);
+        if (obs.x + OBSTACLE_WIDTH < -40) {
+          obstacles.splice(i, 1);
         }
       }
     }
 
-    function endGame() {
-      state = "gameover";
-      atomicTimer = 0;
-    }
+    // ---------------- RENDERING ----------------
 
-    function drawPineTree(tree, scrollX, groundY) {
-      const span = 650;
-      const rawX = (tree.x - scrollX) % span;
-      const screenX = rawX < -60 ? rawX + span : rawX;
-      if (screenX < -60 || screenX > canvas.width + 60) return;
-
-      const s = tree.scale;
-      const isBack = tree.layer === "back";
-      const foliageMain = isBack ? "#1e4d3b" : "#166534";
-      const foliageShade = isBack ? "#14382b" : "#14532d";
-      const trunkColor = isBack ? "#45271a" : "#5c3422";
+    function drawBackground() {
+      const skyGrad = ctx.createLinearGradient(0, 0, 0, PLAY_HEIGHT);
+      skyGrad.addColorStop(0, "#071d1a");
+      skyGrad.addColorStop(0.45, "#0f3b32");
+      skyGrad.addColorStop(1, "#185343");
+      ctx.fillStyle = skyGrad;
+      ctx.fillRect(0, 0, WIDTH, PLAY_HEIGHT);
 
       ctx.save();
-      ctx.translate(screenX, groundY);
-      ctx.scale(s, s);
+      for (let b = 0; b < 3; b++) {
+        const bx = 75 + b * 125;
+        const beamGrad = ctx.createLinearGradient(bx, 0, bx + 90, PLAY_HEIGHT);
+        beamGrad.addColorStop(0, "rgba(187, 247, 208, 0.14)");
+        beamGrad.addColorStop(0.7, "rgba(74, 222, 128, 0.04)");
+        beamGrad.addColorStop(1, "rgba(74, 222, 128, 0)");
+        ctx.fillStyle = beamGrad;
+        ctx.beginPath();
+        ctx.moveTo(bx - 24, 0);
+        ctx.lineTo(bx + 28, 0);
+        ctx.lineTo(bx + 125, PLAY_HEIGHT);
+        ctx.lineTo(bx + 35, PLAY_HEIGHT);
+        ctx.closePath();
+        ctx.fill();
+      }
+      ctx.restore();
 
-      ctx.fillStyle = trunkColor;
-      ctx.fillRect(-5, -18, 10, 18);
+      ctx.fillStyle = "#0a2a24";
+      ctx.beginPath();
+      ctx.moveTo(0, PLAY_HEIGHT);
+      ctx.quadraticCurveTo(95, PLAY_HEIGHT - 190, 210, PLAY_HEIGHT - 140);
+      ctx.quadraticCurveTo(320, PLAY_HEIGHT - 215, WIDTH, PLAY_HEIGHT - 150);
+      ctx.lineTo(WIDTH, PLAY_HEIGHT);
+      ctx.closePath();
+      ctx.fill();
 
-      const tiers = [
-        { y: -16, w: 34, h: 28 },
-        { y: -34, w: 27, h: 26 },
-        { y: -50, w: 20, h: 24 }
+      const envMult = gameState === "playing" ? getCurrentSpeedMultiplier() : 0.45;
+      const farScroll = gameState === "playing" ? frames * 0.35 * envMult : frames * 0.12;
+      const farSpan = 700;
+      for (const t of farTrees) {
+        const sx = (((t.x - farScroll) % farSpan) + farSpan) % farSpan - 80;
+        if (sx < -90 || sx > WIDTH + 90) continue;
+
+        const crownY = PLAY_HEIGHT - t.yOffset - 80;
+        ctx.fillStyle = "#08221d";
+        ctx.fillRect(sx - t.trunkW / 2, crownY, t.trunkW, PLAY_HEIGHT - crownY);
+
+        ctx.fillStyle = "#0c352c";
+        ctx.beginPath();
+        ctx.arc(sx, crownY, t.canopyR, 0, Math.PI * 2);
+        ctx.arc(sx - t.canopyR * 0.55, crownY + 12, t.canopyR * 0.72, 0, Math.PI * 2);
+        ctx.arc(sx + t.canopyR * 0.55, crownY + 10, t.canopyR * 0.75, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      const midScroll = gameState === "playing" ? frames * 0.75 * envMult : frames * 0.25;
+      const midSpan = 682;
+      for (const t of midTrees) {
+        const sx = (((t.x - midScroll) % midSpan) + midSpan) % midSpan - 90;
+        if (sx < -100 || sx > WIDTH + 100) continue;
+
+        const crownY = PLAY_HEIGHT - t.yOffset - 105;
+        ctx.fillStyle = "#132920";
+        ctx.fillRect(sx - t.trunkW / 2, crownY, t.trunkW, PLAY_HEIGHT - crownY);
+
+        ctx.fillStyle = "#1e3c2f";
+        ctx.fillRect(sx - t.trunkW * 0.25, crownY + 8, t.trunkW * 0.22, PLAY_HEIGHT - crownY - 8);
+
+        ctx.fillStyle = "#0f4234";
+        ctx.beginPath();
+        ctx.arc(sx, crownY, t.canopyR, 0, Math.PI * 2);
+        ctx.arc(sx - t.canopyR * 0.6, crownY + 14, t.canopyR * 0.76, 0, Math.PI * 2);
+        ctx.arc(sx + t.canopyR * 0.6, crownY + 12, t.canopyR * 0.78, 0, Math.PI * 2);
+        ctx.fill();
+
+        if (t.hasHangingVine) {
+          const sway = Math.sin(frames * 0.04 + t.x * 0.05) * 5;
+          ctx.strokeStyle = "#15803d";
+          ctx.lineWidth = 2.2;
+          ctx.beginPath();
+          ctx.moveTo(sx + 18, crownY + 24);
+          ctx.quadraticCurveTo(sx + 22 + sway, crownY + 80, sx + 16 + sway * 1.3, crownY + 135);
+          ctx.stroke();
+        }
+      }
+
+      for (const rib of windRibbons) {
+        ctx.save();
+        ctx.strokeStyle = `rgba(187, 247, 208, ${rib.alpha})`;
+        ctx.lineWidth = 2;
+        ctx.lineCap = "round";
+        ctx.beginPath();
+        ctx.moveTo(rib.x, rib.y);
+        ctx.quadraticCurveTo(rib.x + rib.len * 0.5, rib.y - 6, rib.x + rib.len, rib.y + 2);
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      if (gameState === "playing" && activePowerup.type === "speed") {
+        ctx.save();
+        ctx.strokeStyle = "rgba(253, 230, 138, 0.35)";
+        ctx.lineWidth = 2;
+        for (let s = 0; s < 7; s++) {
+          const sy = 55 + ((s * 68 + frames * 7) % (PLAY_HEIGHT - 80));
+          const sx = WIDTH - ((frames * 16 + s * 92) % (WIDTH + 120));
+          ctx.beginPath();
+          ctx.moveTo(sx, sy);
+          ctx.lineTo(sx + 44, sy);
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+
+      const nearScroll = gameState === "playing" ? frames * 1.15 * envMult : frames * 0.35;
+      const nearSpan = 688;
+      for (const t of nearTrees) {
+        const sx = (((t.x - nearScroll) % nearSpan) + nearSpan) % nearSpan - 110;
+        if (sx < -120 || sx > WIDTH + 120) continue;
+
+        ctx.fillStyle = "#091712";
+        ctx.fillRect(sx - t.trunkW / 2, 0, t.trunkW, PLAY_HEIGHT);
+
+        ctx.fillStyle = "#12261e";
+        ctx.fillRect(sx - t.trunkW * 0.32, 0, t.trunkW * 0.2, PLAY_HEIGHT);
+      }
+
+      const topScroll = gameState === "playing" ? frames * 0.9 * envMult : frames * 0.3;
+      const topSpan = 480;
+      for (const st of canopyStrands) {
+        const sx = (((st.x - topScroll) % topSpan) + topSpan) % topSpan - 20;
+        const sway = Math.sin(frames * 0.05 + st.phase) * 4;
+        ctx.strokeStyle = "#166534";
+        ctx.lineWidth = 2.5;
+        ctx.beginPath();
+        ctx.moveTo(sx, 0);
+        ctx.quadraticCurveTo(sx + sway * 0.6, st.length * 0.5, sx + sway, st.length);
+        ctx.stroke();
+
+        ctx.fillStyle = "#22c55e";
+        ctx.beginPath();
+        ctx.ellipse(sx + sway, st.length, 4.5, 2.2, sway * 0.08, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      ctx.fillStyle = "#082921";
+      for (let cx = -30; cx <= WIDTH + 30; cx += 44) {
+        const scrollX = (((cx - topScroll) % (WIDTH + 60)) + (WIDTH + 60)) % (WIDTH + 60) - 30;
+        ctx.beginPath();
+        ctx.arc(scrollX, 4, 34, 0, Math.PI);
+        ctx.fill();
+      }
+
+      for (const leaf of ambientLeaves) {
+        ctx.save();
+        ctx.translate(leaf.x, leaf.y);
+        ctx.rotate(Math.sin(frames * 0.05 + leaf.phase) * 0.7);
+        ctx.fillStyle = leaf.color;
+        ctx.beginPath();
+        ctx.ellipse(0, 0, leaf.size * 1.4, leaf.size * 0.65, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+    }
+
+    function drawVineObstacle(x, y, w, h, isTop, swayPhase) {
+      if (h <= 0) return;
+
+      const centerX = x + w * 0.5;
+      const stepY = 14;
+
+      const strands = [
+        { offset: -w * 0.22, width: w * 0.44, color: "#15803d", phaseShift: 0 },
+        { offset: w * 0.22, width: w * 0.44, color: "#166534", phaseShift: Math.PI }
       ];
 
-      for (const t of tiers) {
-        ctx.fillStyle = foliageMain;
-        ctx.beginPath();
-        ctx.moveTo(0, t.y - t.h);
-        ctx.lineTo(t.w / 2, t.y);
-        ctx.lineTo(-t.w / 2, t.y);
-        ctx.closePath();
-        ctx.fill();
+      ctx.save();
+      if (activePowerup.type === "noclip") {
+        ctx.globalAlpha = 0.48;
+      }
 
-        ctx.fillStyle = foliageShade;
-        ctx.beginPath();
-        ctx.moveTo(0, t.y - t.h);
-        ctx.lineTo(t.w / 2, t.y);
-        ctx.lineTo(0, t.y);
-        ctx.closePath();
-        ctx.fill();
+      ctx.strokeStyle = "#14532d";
+      ctx.lineWidth = w * 0.56;
+      ctx.lineCap = "round";
+      ctx.beginPath();
+      for (let py = y; py <= y + h; py += stepY) {
+        const wave = Math.sin(py * 0.045 + swayPhase) * 5;
+        if (py === y) ctx.moveTo(centerX + wave, py);
+        else ctx.lineTo(centerX + wave, py);
+      }
+      ctx.lineTo(centerX + Math.sin((y + h) * 0.045 + swayPhase) * 5, y + h);
+      ctx.stroke();
 
-        ctx.strokeStyle = "#f8fafc";
-        ctx.lineWidth = 2;
+      for (const st of strands) {
+        ctx.strokeStyle = "#052e16";
+        ctx.lineWidth = st.width + 3;
         ctx.beginPath();
-        ctx.moveTo(-1, t.y - t.h + 2);
-        ctx.lineTo(-t.w / 2 + 2, t.y - 1);
+        for (let py = y; py <= y + h; py += 8) {
+          const coil = centerX + Math.sin(py * 0.075 + swayPhase + st.phaseShift) * (w * 0.26);
+          if (py === y) ctx.moveTo(coil, py);
+          else ctx.lineTo(coil, py);
+        }
+        ctx.stroke();
+
+        ctx.strokeStyle = st.color;
+        ctx.lineWidth = st.width;
+        ctx.beginPath();
+        for (let py = y; py <= y + h; py += 8) {
+          const coil = centerX + Math.sin(py * 0.075 + swayPhase + st.phaseShift) * (w * 0.26);
+          if (py === y) ctx.moveTo(coil, py);
+          else ctx.lineTo(coil, py);
+        }
+        ctx.stroke();
+      }
+
+      for (let ly = y + 18; ly < y + h - 14; ly += 22) {
+        const idx = Math.floor((ly - y) / 22);
+        const side = idx % 2 === 0 ? -1 : 1;
+        const spineX = centerX + Math.sin(ly * 0.075 + swayPhase) * (w * 0.24);
+        const leafX = spineX + side * (w * 0.42);
+        const leafY = ly + Math.sin(swayPhase + idx) * 2;
+
+        ctx.fillStyle = idx % 3 === 0 ? "#22c55e" : "#16a34a";
+        ctx.strokeStyle = "#052e16";
+        ctx.lineWidth = 1.6;
+        ctx.beginPath();
+        ctx.ellipse(leafX, leafY, 10, 5, side * 0.45, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.strokeStyle = "#bbf7d0";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(spineX, leafY);
+        ctx.lineTo(leafX + side * 5, leafY);
+        ctx.stroke();
+      }
+
+      const tipY = isTop ? y + h - 6 : y + 6;
+      const tipSway = Math.sin(tipY * 0.075 + swayPhase) * 4;
+      const tipX = centerX + tipSway;
+
+      ctx.fillStyle = "#15803d";
+      ctx.strokeStyle = "#052e16";
+      ctx.lineWidth = 2.4;
+      ctx.beginPath();
+      ctx.roundRect(x - 3, isTop ? y + h - 18 : y, w + 6, 18, 8);
+      ctx.fill();
+      ctx.stroke();
+
+      const tipLeaves = [
+        { dx: -w * 0.52, dy: isTop ? 4 : -4, ang: isTop ? 0.55 : -0.55, col: "#4ade80" },
+        { dx: w * 0.52, dy: isTop ? 4 : -4, ang: isTop ? -0.55 : 0.55, col: "#22c55e" },
+        { dx: -w * 0.25, dy: isTop ? 9 : -9, ang: isTop ? 0.85 : -0.85, col: "#86efac" },
+        { dx: w * 0.25, dy: isTop ? 9 : -9, ang: isTop ? -0.85 : 0.85, col: "#4ade80" }
+      ];
+
+      for (const tl of tipLeaves) {
+        ctx.fillStyle = tl.col;
+        ctx.strokeStyle = "#052e16";
+        ctx.lineWidth = 1.8;
+        ctx.beginPath();
+        ctx.ellipse(tipX + tl.dx, tipY + tl.dy, 11, 5.5, tl.ang, 0, Math.PI * 2);
+        ctx.fill();
         ctx.stroke();
       }
 
       ctx.restore();
     }
 
-    function drawBackground() {
-      const groundY = canvas.height - GROUND_HEIGHT;
-
-      const skyGrad = ctx.createLinearGradient(0, 0, 0, groundY);
-      skyGrad.addColorStop(0, "#7dd3fc");
-      skyGrad.addColorStop(0.65, "#bae6fd");
-      skyGrad.addColorStop(1, "#e0f2fe");
-      ctx.fillStyle = skyGrad;
-      ctx.fillRect(0, 0, canvas.width, groundY);
-
-      ctx.fillStyle = "#e2e8f0";
-      ctx.beginPath();
-      ctx.moveTo(0, groundY);
-      ctx.quadraticCurveTo(95, groundY - 75, 210, groundY - 28);
-      ctx.quadraticCurveTo(315, groundY - 82, canvas.width, groundY - 34);
-      ctx.lineTo(canvas.width, groundY);
-      ctx.closePath();
-      ctx.fill();
-
-      const speedMult = activePowerup.type === "speed" ? SUPER_SPEED_MULTIPLIER : 1;
-      const backScroll = state === "playing" ? frames * 0.55 * speedMult : 0;
-      const frontScroll = state === "playing" ? frames * 1.05 * speedMult : 0;
-
-      for (const tree of pineTrees) {
-        if (tree.layer === "back") drawPineTree(tree, backScroll, groundY);
-      }
-      for (const tree of pineTrees) {
-        if (tree.layer === "front") drawPineTree(tree, frontScroll, groundY);
-      }
-
-      if (state === "playing" && activePowerup.type === "speed") {
-        ctx.strokeStyle = "rgba(255, 255, 255, 0.55)";
-        ctx.lineWidth = 2;
-        for (let s = 0; s < 8; s++) {
-          const ly = 50 + ((s * 63 + frames * 9) % (groundY - 70));
-          const lx = canvas.width - ((frames * 18 + s * 95) % (canvas.width + 120));
-          ctx.beginPath();
-          ctx.moveTo(lx, ly);
-          ctx.lineTo(lx + 42, ly);
-          ctx.stroke();
+    function drawObstacles() {
+      for (const obs of obstacles) {
+        if (!obs.topDestroyed) {
+          drawVineObstacle(obs.x, 0, OBSTACLE_WIDTH, obs.topHeight, true, obs.swayPhase);
         }
-      }
-
-      ctx.fillStyle = "rgba(255, 255, 255, 0.9)";
-      for (const flake of snowflakes) {
-        ctx.beginPath();
-        ctx.arc(flake.x, flake.y, flake.radius, 0, Math.PI * 2);
-        ctx.fill();
-      }
-    }
-
-    function drawSingleLogSegment(x, y, w, h, isTopLog) {
-      if (h <= 0) return;
-
-      ctx.fillStyle = "#7c4a2d";
-      ctx.fillRect(x, y, w, h);
-
-      ctx.strokeStyle = "#56301b";
-      ctx.lineWidth = 2;
-      for (const gx of [x + 11, x + 24, x + 39, x + 51]) {
-        ctx.beginPath();
-        ctx.moveTo(gx, y);
-        ctx.lineTo(gx, y + h);
-        ctx.stroke();
-      }
-
-      ctx.fillStyle = "rgba(253, 230, 138, 0.16)";
-      ctx.fillRect(x + 4, y, 6, h);
-
-      ctx.strokeStyle = "#3b1f10";
-      ctx.lineWidth = 3;
-      ctx.strokeRect(x, y, w, h);
-
-      const capHeight = 18;
-      const capY = isTopLog ? y + h - capHeight : y;
-      const capX = x - 3;
-      const capW = w + 6;
-
-      ctx.fillStyle = "#deb887";
-      ctx.fillRect(capX, capY, capW, capHeight);
-      ctx.strokeStyle = "#3b1f10";
-      ctx.lineWidth = 2.6;
-      ctx.strokeRect(capX, capY, capW, capHeight);
-
-      ctx.strokeStyle = "#9c6644";
-      ctx.lineWidth = 1.4;
-      ctx.beginPath();
-      ctx.moveTo(capX + 5, capY + 5);
-      ctx.lineTo(capX + capW - 5, capY + 5);
-      ctx.moveTo(capX + 5, capY + 12);
-      ctx.lineTo(capX + capW - 5, capY + 12);
-      ctx.stroke();
-
-      if (isTopLog) {
-        ctx.fillStyle = "#f8fafc";
-        ctx.fillRect(capX + 1, capY + capHeight - 4, capW - 2, 4);
-      } else if (y + h < canvas.height - GROUND_HEIGHT - 2) {
-        ctx.fillStyle = "#f8fafc";
-        ctx.fillRect(capX + 1, capY, capW - 2, 4);
-      }
-    }
-
-    function drawLogs() {
-      const groundY = canvas.height - GROUND_HEIGHT;
-      for (const l of logs) {
-        if (!l.topDestroyed) {
-          drawSingleLogSegment(l.x, 0, LOG_WIDTH, l.topHeight, true);
-        }
-        if (!l.bottomDestroyed) {
-          drawSingleLogSegment(l.x, l.bottomY, LOG_WIDTH, groundY - l.bottomY, false);
+        if (!obs.bottomDestroyed) {
+          drawVineObstacle(obs.x, obs.bottomY, OBSTACLE_WIDTH, PLAY_HEIGHT - obs.bottomY, false, obs.swayPhase);
         }
       }
     }
 
-    function drawPowerups() {
-      for (const p of powerups) {
-        const bobY = p.y + Math.sin(p.phase) * 5;
-        let fill = "#f59e0b";
-        let badge = "⚡";
-        if (p.type === "strength") {
-          fill = "#ef4444";
-          badge = "💪";
-        } else if (p.type === "jump") {
-          fill = "#10b981";
-          badge = "⬆";
-        } else if (p.type === "noclip") {
-          fill = "#8b5cf6";
-          badge = "👻";
-        }
+    function drawPowerupOrbs() {
+      for (const orb of powerupOrbs) {
+        const meta = POWERUP_META[orb.type];
+        const bobY = orb.y + Math.sin(orb.bobPhase) * 6;
+        const pulse = 1 + Math.sin(orb.bobPhase * 1.5) * 0.1;
 
         ctx.save();
-        ctx.translate(p.x, bobY);
+        ctx.translate(orb.x, bobY);
 
-        ctx.fillStyle = fill;
-        ctx.strokeStyle = "#ffffff";
-        ctx.lineWidth = 2.4;
+        const grad = ctx.createRadialGradient(0, 0, 3, 0, 0, orb.radius * 1.65 * pulse);
+        grad.addColorStop(0, meta.glow);
+        grad.addColorStop(1, "rgba(0, 0, 0, 0)");
+        ctx.fillStyle = grad;
         ctx.beginPath();
-        ctx.arc(0, 0, p.radius, 0, Math.PI * 2);
+        ctx.arc(0, 0, orb.radius * 1.65 * pulse, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = meta.color;
+        ctx.strokeStyle = "#ffffff";
+        ctx.lineWidth = 2.2;
+        ctx.beginPath();
+        ctx.arc(0, 0, orb.radius, 0, Math.PI * 2);
         ctx.fill();
         ctx.stroke();
 
         ctx.fillStyle = "#ffffff";
-        ctx.font = "bold 13px system-ui, sans-serif";
+        ctx.font = "bold 8.5px system-ui, sans-serif";
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
-        ctx.fillText(badge, 0, 1);
+        ctx.fillText(meta.badge, 0, 0.5);
 
         ctx.restore();
       }
     }
 
     function drawGround() {
-      const groundY = canvas.height - GROUND_HEIGHT;
+      const turfGrad = ctx.createLinearGradient(0, PLAY_HEIGHT, 0, PLAY_HEIGHT + 24);
+      turfGrad.addColorStop(0, "#4ade80");
+      turfGrad.addColorStop(0.55, "#15803d");
+      turfGrad.addColorStop(1, "#052e16");
+      ctx.fillStyle = turfGrad;
+      ctx.fillRect(0, PLAY_HEIGHT, WIDTH, 24);
 
-      ctx.fillStyle = "#f8fafc";
-      ctx.fillRect(0, groundY, canvas.width, 20);
+      const envMult = gameState === "playing" ? getCurrentSpeedMultiplier() : 0.45;
+      const scroll = gameState === "playing" ? frames * BASE_OBSTACLE_SPEED * envMult : frames * 0.4;
+      for (let gx = -24; gx < WIDTH + 24; gx += 22) {
+        const tx = (((gx - scroll) % (WIDTH + 24)) + (WIDTH + 24)) % (WIDTH + 24) - 12;
+        ctx.fillStyle = "#86efac";
+        ctx.beginPath();
+        ctx.moveTo(tx, PLAY_HEIGHT + 3);
+        ctx.lineTo(tx + 4, PLAY_HEIGHT - 6);
+        ctx.lineTo(tx + 8, PLAY_HEIGHT + 3);
+        ctx.closePath();
+        ctx.fill();
+      }
 
-      ctx.fillStyle = "#cbd5e1";
-      ctx.fillRect(0, groundY + 16, canvas.width, 6);
+      ctx.fillStyle = "#1c130b";
+      ctx.fillRect(0, PLAY_HEIGHT + 22, WIDTH, GROUND_HEIGHT - 22);
 
-      ctx.fillStyle = "#64748b";
-      ctx.fillRect(0, groundY + 22, canvas.width, GROUND_HEIGHT - 22);
+      ctx.fillStyle = "#332214";
+      for (let rx = -30; rx < WIDTH + 30; rx += 54) {
+        const sx = (((rx - scroll * 0.85) % (WIDTH + 60)) + (WIDTH + 60)) % (WIDTH + 60) - 30;
+        ctx.beginPath();
+        ctx.ellipse(sx, PLAY_HEIGHT + 46, 12, 4.5, 0.12, 0, Math.PI * 2);
+        ctx.fill();
+      }
 
-      ctx.strokeStyle = "#475569";
-      ctx.lineWidth = 2.5;
+      ctx.strokeStyle = "#052e16";
+      ctx.lineWidth = 3;
       ctx.beginPath();
-      ctx.moveTo(0, groundY);
-      ctx.lineTo(canvas.width, groundY);
+      ctx.moveTo(0, PLAY_HEIGHT);
+      ctx.lineTo(WIDTH, PLAY_HEIGHT);
       ctx.stroke();
     }
 
-    function drawAtomicBeam() {
-      if (atomicTimer <= 0) return;
+    function drawWindArrows() {
+      for (const ar of arrows) {
+        if (ar.trail.length > 1) {
+          ctx.save();
+          for (let i = 1; i < ar.trail.length; i++) {
+            const tRatio = i / ar.trail.length;
+            ctx.strokeStyle = `rgba(134, 239, 172, ${tRatio * 0.7})`;
+            ctx.lineWidth = 3 + tRatio * 6;
+            ctx.lineCap = "round";
+            ctx.beginPath();
+            ctx.moveTo(ar.trail[i - 1].x, ar.trail[i - 1].y + Math.sin(frames * 0.9 + i) * 2.5);
+            ctx.lineTo(ar.trail[i].x, ar.trail[i].y + Math.cos(frames * 0.9 + i) * 2.5);
+            ctx.stroke();
+          }
+          ctx.restore();
+        }
 
-      const origin = getBeamOrigin();
-      const beamLen = canvas.width - origin.x + 25;
-      const pulse = 1 + Math.sin(frames * 1.1) * 0.22;
-      const fade = Math.min(1, atomicTimer / 6);
-
-      ctx.save();
-      ctx.translate(origin.x, origin.y);
-      ctx.rotate(seal.rotation);
-      ctx.globalAlpha = fade;
-
-      ctx.fillStyle = "rgba(56, 189, 248, 0.35)";
-      ctx.beginPath();
-      ctx.roundRect(0, -16 * pulse, beamLen, 32 * pulse, 12);
-      ctx.fill();
-
-      ctx.fillStyle = "rgba(14, 165, 233, 0.85)";
-      ctx.beginPath();
-      ctx.roundRect(0, -9 * pulse, beamLen, 18 * pulse, 8);
-      ctx.fill();
-
-      ctx.fillStyle = "#f0f9ff";
-      ctx.beginPath();
-      ctx.roundRect(0, -4 * pulse, beamLen, 8 * pulse, 4);
-      ctx.fill();
-
-      ctx.fillStyle = "#7dd3fc";
-      ctx.beginPath();
-      ctx.arc(0, 0, 11 * pulse, 0, Math.PI * 2);
-      ctx.fill();
-
-      ctx.restore();
-    }
-
-    function drawDebris() {
-      for (const d of debrisParticles) {
-        const alpha = Math.max(0, Math.min(1, d.life / 30));
         ctx.save();
-        ctx.globalAlpha = alpha;
-        ctx.translate(d.x, d.y);
-        ctx.rotate(d.rot);
-        ctx.fillStyle = d.color;
-        ctx.fillRect(-d.w / 2, -d.h / 2, d.w, d.h);
+        ctx.translate(ar.x, ar.y);
+        ctx.rotate(ar.angle);
+
+        const vortexGrad = ctx.createLinearGradient(-34, 0, 24, 0);
+        vortexGrad.addColorStop(0, "rgba(34, 197, 94, 0)");
+        vortexGrad.addColorStop(0.5, "rgba(74, 222, 128, 0.45)");
+        vortexGrad.addColorStop(1, "rgba(220, 252, 231, 0.92)");
+        ctx.fillStyle = vortexGrad;
+        ctx.beginPath();
+        ctx.ellipse(-6, 0, 28, 10 + Math.sin(frames * 1.2) * 2.2, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.strokeStyle = "#f0fdf4";
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(-24, 0);
+        ctx.lineTo(14, 0);
+        ctx.stroke();
+
+        ctx.fillStyle = "#4ade80";
+        ctx.strokeStyle = "#14532d";
+        ctx.lineWidth = 1.3;
+        ctx.beginPath();
+        ctx.ellipse(-25, -5, 6.5, 3, -0.45, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.ellipse(-25, 5, 6.5, 3, 0.45, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.fillStyle = "#dcfce7";
+        ctx.strokeStyle = "#15803d";
+        ctx.lineWidth = 1.6;
+        ctx.beginPath();
+        ctx.moveTo(23, 0);
+        ctx.lineTo(9, -7);
+        ctx.lineTo(12, 0);
+        ctx.lineTo(9, 7);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+
         ctx.restore();
       }
     }
 
-    function drawSteam() {
-      for (const sp of steamPuffs) {
-        const alpha = Math.max(0, Math.min(0.65, sp.life / 36));
-        ctx.fillStyle = `rgba(255, 255, 255, ${alpha.toFixed(2)})`;
-        ctx.beginPath();
-        ctx.arc(sp.x, sp.y, sp.radius, 0, Math.PI * 2);
-        ctx.fill();
-      }
-    }
+    function drawCompanionBird() {
+      const wingLift = Math.sin(archer.birdWingPhase) * (0.45 + archer.birdFlapBoost * 0.55);
 
-    function drawWinterBeanie() {
       ctx.save();
-      ctx.translate(-1, -14);
-      ctx.rotate(-0.08);
+      ctx.translate(13, 5);
 
-      ctx.fillStyle = "#f8fafc";
-      ctx.strokeStyle = "#1e293b";
-      ctx.lineWidth = 2.2;
+      ctx.fillStyle = "#15803d";
       ctx.beginPath();
-      ctx.arc(2, -15, 5.5, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.stroke();
-
-      ctx.fillStyle = "#2563eb";
-      ctx.beginPath();
-      ctx.arc(2, 1, 13.5, Math.PI, 0);
+      ctx.moveTo(-7, 1);
+      ctx.lineTo(-15, -3);
+      ctx.lineTo(-13, 3);
+      ctx.lineTo(-15, 6);
       ctx.closePath();
       ctx.fill();
+
+      ctx.fillStyle = "#4ade80";
+      ctx.strokeStyle = "#14532d";
+      ctx.lineWidth = 1.8;
+      ctx.beginPath();
+      ctx.ellipse(0, 1, 8.2, 6.4, -0.1, 0, Math.PI * 2);
+      ctx.fill();
       ctx.stroke();
 
-      ctx.strokeStyle = "#93c5fd";
+      ctx.fillStyle = "#dcfce7";
+      ctx.beginPath();
+      ctx.ellipse(1.5, 3.0, 5.0, 3.4, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.strokeStyle = "#a3e635";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(2, -5.5);
+      ctx.quadraticCurveTo(0, -11, -3, -9.5);
+      ctx.stroke();
+
+      ctx.fillStyle = "#0f172a";
+      ctx.beginPath();
+      ctx.arc(4.5, -1, 1.8, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = "#a3e635";
+      ctx.beginPath();
+      ctx.moveTo(8, -1);
+      ctx.lineTo(13, 1);
+      ctx.lineTo(8, 3);
+      ctx.closePath();
+      ctx.fill();
+
+      ctx.save();
+      ctx.translate(-1, 0);
+      ctx.rotate(wingLift);
+      ctx.fillStyle = "#22c55e";
+      ctx.strokeStyle = "#14532d";
       ctx.lineWidth = 1.6;
       ctx.beginPath();
-      ctx.moveTo(-9.5, -5.5);
-      ctx.lineTo(13.5, -5.5);
-      ctx.stroke();
-
-      ctx.fillStyle = "#1d4ed8";
-      ctx.strokeStyle = "#1e293b";
-      ctx.lineWidth = 2.2;
-      ctx.beginPath();
-      ctx.roundRect(-12, -1.5, 28, 6, 3);
+      ctx.ellipse(-2, -3, 6.5, 3.5, -0.35, 0, Math.PI * 2);
       ctx.fill();
       ctx.stroke();
-
-      ctx.strokeStyle = "#1e3a8a";
-      ctx.lineWidth = 1.4;
-      for (let rx = -8; rx <= 12; rx += 5) {
-        ctx.beginPath();
-        ctx.moveTo(rx, -1);
-        ctx.lineTo(rx, 4);
-        ctx.stroke();
-      }
+      ctx.restore();
 
       ctx.restore();
     }
 
-    function drawFullBodyDownJacket() {
+    function drawWindArcherCookie() {
       ctx.save();
-      ctx.translate(-1, 3);
-      ctx.rotate(-0.04);
-
-      ctx.fillStyle = "#ef4444";
-      ctx.strokeStyle = "#1e293b";
-      ctx.lineWidth = 2.5;
-
-      ctx.beginPath();
-      ctx.ellipse(-1, 1, 23.5, 19, 0, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.stroke();
-
-      ctx.strokeStyle = "#991b1b";
-      ctx.lineWidth = 1.8;
-      for (const bx of [-14, -6, 2, 10]) {
-        ctx.beginPath();
-        ctx.moveTo(bx, -15);
-        ctx.quadraticCurveTo(bx + 1.5, 1, bx, 17);
-        ctx.stroke();
-      }
-
-      ctx.fillStyle = "#dc2626";
-      ctx.strokeStyle = "#1e293b";
-      ctx.lineWidth = 2.2;
-      ctx.beginPath();
-      ctx.roundRect(-11, -18, 22, 7, 3.5);
-      ctx.fill();
-      ctx.stroke();
-
-      ctx.restore();
-    }
-
-    function drawHotChocolateMugAtHand() {
-      ctx.save();
-      ctx.translate(4, 8);
-      ctx.rotate(-seal.flipperAngle * 0.65);
-
-      ctx.strokeStyle = "#1e293b";
-      ctx.lineWidth = 2.2;
-      ctx.beginPath();
-      ctx.arc(-6.2, 0, 3.4, Math.PI / 2, (Math.PI * 3) / 2);
-      ctx.stroke();
-
-      ctx.fillStyle = "#fef3c7";
-      ctx.strokeStyle = "#1e293b";
-      ctx.lineWidth = 2.2;
-      ctx.beginPath();
-      ctx.roundRect(-5.5, -6, 11, 11.5, 2.5);
-      ctx.fill();
-      ctx.stroke();
-
-      ctx.fillStyle = "#5c2c16";
-      ctx.beginPath();
-      ctx.ellipse(0, -5.4, 4.4, 1.7, 0, 0, Math.PI * 2);
-      ctx.fill();
-
-      ctx.fillStyle = "#ffffff";
-      ctx.beginPath();
-      ctx.roundRect(-3.0, -7.4, 2.8, 2.4, 0.8);
-      ctx.roundRect(0.5, -7.1, 2.6, 2.3, 0.8);
-      ctx.fill();
-
-      ctx.restore();
-    }
-
-    function drawSeal() {
-      ctx.save();
-      ctx.translate(seal.x, seal.y);
+      ctx.translate(archer.x, archer.y);
 
       if (activePowerup.type) {
-        let auraColor = "rgba(245, 158, 11, 0.45)";
-        if (activePowerup.type === "strength") auraColor = "rgba(239, 68, 68, 0.45)";
-        if (activePowerup.type === "jump") auraColor = "rgba(16, 185, 129, 0.45)";
-        if (activePowerup.type === "noclip") auraColor = "rgba(139, 92, 246, 0.45)";
-
-        ctx.fillStyle = auraColor;
+        const meta = POWERUP_META[activePowerup.type];
+        const pulseR = 35 + Math.sin(frames * 0.25) * 3;
+        const pGrad = ctx.createRadialGradient(0, 0, 8, 0, 0, pulseR);
+        pGrad.addColorStop(0, meta.glow);
+        pGrad.addColorStop(1, "rgba(0, 0, 0, 0)");
+        ctx.fillStyle = pGrad;
         ctx.beginPath();
-        ctx.arc(0, 0, seal.radius + 9 + Math.sin(frames * 0.3) * 2, 0, Math.PI * 2);
+        ctx.arc(0, 0, pulseR, 0, Math.PI * 2);
+        ctx.fill();
+
+        if (activePowerup.type === "strength") {
+          ctx.strokeStyle = "rgba(239, 68, 68, 0.7)";
+          ctx.lineWidth = 2.2;
+          ctx.beginPath();
+          ctx.arc(0, 0, 27, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+      } else {
+        const aura = ctx.createRadialGradient(0, 0, 6, 0, 0, 34);
+        aura.addColorStop(0, "rgba(134, 239, 172, 0.26)");
+        aura.addColorStop(1, "rgba(134, 239, 172, 0)");
+        ctx.fillStyle = aura;
+        ctx.beginPath();
+        ctx.arc(0, 0, 34, 0, Math.PI * 2);
         ctx.fill();
       }
 
@@ -1022,246 +1223,513 @@
         ctx.globalAlpha = 0.65;
       }
 
-      ctx.rotate(seal.rotation);
+      ctx.rotate(archer.tilt);
 
-      const wag = state === "playing" ? Math.sin(frames * 0.25) * 0.2 : 0;
+      const w1 = Math.sin(archer.scarfPhase) * 6.5;
+      const w2 = Math.cos(archer.scarfPhase + 1.0) * 7.5;
+      const w3 = Math.sin(archer.scarfPhase + 2.1) * 6;
 
-      // Tail flippers
-      ctx.save();
-      ctx.translate(-22, 7);
-      ctx.rotate(wag);
-      ctx.fillStyle = "#64748b";
-      ctx.strokeStyle = "#1e293b";
-      ctx.lineWidth = 2.4;
+      // Flowing emerald wind scarf tail billowing behind
+      ctx.fillStyle = "#15803d";
+      ctx.strokeStyle = "#052e16";
+      ctx.lineWidth = 1.7;
       ctx.beginPath();
-      ctx.ellipse(-5, -2, 7.5, 4, -0.35, 0, Math.PI * 2);
-      ctx.ellipse(-5, 4.5, 7.5, 4, 0.35, 0, Math.PI * 2);
+      ctx.moveTo(-8, -2);
+      ctx.quadraticCurveTo(-22, -11 + w1, -39, -3 + w2);
+      ctx.quadraticCurveTo(-26, 6 + w1, -9, 4);
+      ctx.closePath();
       ctx.fill();
       ctx.stroke();
+
+      ctx.fillStyle = "#4ade80";
+      ctx.beginPath();
+      ctx.moveTo(-9, 2);
+      ctx.quadraticCurveTo(-22, 6 - w1, -35, 13 - w2);
+      ctx.quadraticCurveTo(-22, 12 - w1, -8, 5);
+      ctx.closePath();
+      ctx.fill();
+
+      // Slender quiver with leaf-fletched arrows on back
+      ctx.save();
+      ctx.translate(-7, 2);
+      ctx.rotate(-0.42);
+
+      for (const aOff of [-2.5, 1, 4.5]) {
+        ctx.strokeStyle = "#ecfdf5";
+        ctx.lineWidth = 1.8;
+        ctx.beginPath();
+        ctx.moveTo(aOff, -9);
+        ctx.lineTo(aOff, -18);
+        ctx.stroke();
+
+        ctx.fillStyle = "#86efac";
+        ctx.beginPath();
+        ctx.ellipse(aOff - 2.2, -17, 3.2, 1.6, -0.5, 0, Math.PI * 2);
+        ctx.ellipse(aOff + 2.2, -17, 3.2, 1.6, 0.5, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      ctx.fillStyle = "#7c3f1d";
+      ctx.strokeStyle = "#2b1408";
+      ctx.lineWidth = 1.9;
+      ctx.beginPath();
+      ctx.roundRect(-5, -10, 11, 20, 3.5);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = "#166534";
+      ctx.fillRect(-4.2, -3.5, 9.4, 4.5);
       ctx.restore();
 
-      // Base seal body
-      ctx.fillStyle = "#94a3b8";
-      ctx.strokeStyle = "#1e293b";
-      ctx.lineWidth = 2.5;
+      // Slim, agile cookie legs / boots
+      ctx.fillStyle = "#a3e635";
+      ctx.strokeStyle = "#2b1408";
+      ctx.lineWidth = 1.9;
       ctx.beginPath();
-      ctx.ellipse(-1, 2, 22, 18, -0.04, 0, Math.PI * 2);
+      ctx.roundRect(-4.5, 12.5, 4.6, 8.5, 2.3);
+      ctx.roundRect(2.8, 12.5, 4.6, 8.5, 2.3);
       ctx.fill();
       ctx.stroke();
 
-      // Full-body quilted down jacket
-      drawFullBodyDownJacket();
+      ctx.fillStyle = "#166534";
+      ctx.fillRect(-4.5, 12.5, 4.6, 3.8);
+      ctx.fillRect(2.8, 12.5, 4.6, 3.8);
 
-      // Soft rosy cheek blush
-      ctx.fillStyle = "rgba(251, 113, 133, 0.45)";
+      // Slimmer cookie torso & dark belt
+      const tunicGrad = ctx.createLinearGradient(-9, -4, 9, 15);
+      tunicGrad.addColorStop(0, "#84cc16");
+      tunicGrad.addColorStop(1, "#3f6212");
+
+      ctx.fillStyle = tunicGrad;
+      ctx.strokeStyle = "#2b1408";
+      ctx.lineWidth = 2.1;
       ctx.beginPath();
-      ctx.ellipse(9, 4.5, 4.5, 2.8, 0, 0, Math.PI * 2);
-      ctx.fill();
-
-      // Plump snout / muzzle
-      ctx.fillStyle = "#cbd5e1";
-      ctx.strokeStyle = "#1e293b";
-      ctx.lineWidth = 2.4;
-      ctx.beginPath();
-      ctx.ellipse(16.5, 3, 8.5, 6.5, 0, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.stroke();
-
-      // Cute button nose
-      ctx.fillStyle = "#0f172a";
-      ctx.beginPath();
-      ctx.ellipse(23.5, 1, 3.6, 2.7, 0, 0, Math.PI * 2);
-      ctx.fill();
-
-      // Big glossy puppy eye
-      ctx.fillStyle = "#0f172a";
-      ctx.beginPath();
-      ctx.arc(8.5, -4.5, 6.2, 0, Math.PI * 2);
-      ctx.fill();
-
-      // Primary eye catchlight
-      ctx.fillStyle = "#ffffff";
-      ctx.beginPath();
-      ctx.arc(10.5, -6.8, 2.4, 0, Math.PI * 2);
-      ctx.fill();
-
-      // Secondary lower catchlight
-      ctx.beginPath();
-      ctx.arc(6.6, -2.5, 1.2, 0, Math.PI * 2);
-      ctx.fill();
-
-      // Whiskers
-      ctx.strokeStyle = "#334155";
-      ctx.lineWidth = 1.4;
-      ctx.beginPath();
-      ctx.moveTo(16, 2.5);
-      ctx.lineTo(25, -2);
-      ctx.moveTo(16, 4);
-      ctx.lineTo(26, 3);
-      ctx.moveTo(15, 5.5);
-      ctx.lineTo(24, 9);
-      ctx.moveTo(14, 6.5);
-      ctx.lineTo(20, 12);
-      ctx.stroke();
-
-      // Winter beanie
-      drawWinterBeanie();
-
-      // Jacket-sleeved flipper holding hot chocolate mug
-      ctx.save();
-      ctx.translate(-2, 10);
-      ctx.rotate(seal.flipperAngle);
-
-      ctx.fillStyle = "#dc2626";
-      ctx.strokeStyle = "#1e293b";
-      ctx.lineWidth = 2.2;
-      ctx.beginPath();
-      ctx.ellipse(-2, 6, 9, 5, 0.55, 0, Math.PI * 2);
+      ctx.roundRect(-8.5, -3.5, 17, 17.5, 6.5);
       ctx.fill();
       ctx.stroke();
 
-      drawHotChocolateMugAtHand();
+      ctx.fillStyle = "#1e293b";
+      ctx.fillRect(-8.5, 6.5, 17, 3.6);
+      ctx.fillStyle = "#4ade80";
+      ctx.fillRect(-1.8, 6.5, 3.6, 3.6);
 
-      ctx.restore();
-      ctx.restore();
-    }
+      // Flowing, wind-swept layered leaf hair (sweeping back & trailing in breeze)
+      const flowingLocks = [
+        {
+          fill: "#14532d",
+          d: [
+            [-8, -14],
+            [-24, -18 + w1 * 0.7],
+            [-40, -11 + w2 * 0.85],
+            [-26, -6 + w1 * 0.6],
+            [-8, -8]
+          ]
+        },
+        {
+          fill: "#15803d",
+          d: [
+            [-7, -18],
+            [-23, -27 + w2 * 0.75],
+            [-42, -21 + w3 * 0.9],
+            [-25, -14 + w2 * 0.65],
+            [-6, -12]
+          ]
+        },
+        {
+          fill: "#65a30d",
+          d: [
+            [-5, -21],
+            [-19, -34 + w3 * 0.8],
+            [-36, -30 + w1 * 0.9],
+            [-18, -23 + w3 * 0.65],
+            [-2, -18]
+          ]
+        },
+        {
+          fill: "#84cc16",
+          d: [
+            [1, -23],
+            [-9, -35 + w1 * 0.75],
+            [-23, -34 + w2 * 0.85],
+            [-7, -25 + w1 * 0.6],
+            [6, -21]
+          ]
+        }
+      ];
 
-    function drawThoughtBubble() {
-      if (state !== "playing") return;
+      for (const lock of flowingLocks) {
+        ctx.fillStyle = lock.fill;
+        ctx.strokeStyle = "#052e16";
+        ctx.lineWidth = 1.6;
+        ctx.lineJoin = "round";
+        ctx.beginPath();
+        lock.d.forEach(([px, py], idx) => {
+          if (idx === 0) ctx.moveTo(px, py);
+          else ctx.lineTo(px, py);
+        });
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+      }
 
-      const text = THOUGHTS[thoughtIndex];
-      ctx.save();
-      ctx.font = "bold 12px system-ui, sans-serif";
-      const textW = ctx.measureText(text).width;
-      const boxW = Math.max(64, textW + 18);
-      const boxH = 26;
-      const bx = Math.min(canvas.width - boxW - 10, seal.x + 12);
-      const by = Math.max(12, seal.y - 68);
+      // Slimmer cookie head
+      ctx.fillStyle = "#d9e29c";
+      ctx.strokeStyle = "#2b1408";
+      ctx.lineWidth = 2.1;
+      ctx.beginPath();
+      ctx.arc(1, -10, 12.8, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
 
-      ctx.fillStyle = "#ffffff";
-      ctx.strokeStyle = "#1e293b";
+      // Swept-back side & crown leaf locks framing the head
+      ctx.fillStyle = "#84cc16";
+      ctx.strokeStyle = "#14532d";
       ctx.lineWidth = 1.6;
       ctx.beginPath();
-      ctx.arc(seal.x + 8, seal.y - 30, 3, 0, Math.PI * 2);
+      ctx.moveTo(4, -22);
+      ctx.quadraticCurveTo(13, -27 + w2 * 0.45, 19, -20 + w1 * 0.55);
+      ctx.quadraticCurveTo(12, -16, 7, -19);
+      ctx.closePath();
       ctx.fill();
       ctx.stroke();
 
+      // Front swooping leaf bangs across forehead
+      ctx.fillStyle = "#a3e635";
+      ctx.strokeStyle = "#14532d";
+      ctx.lineWidth = 1.5;
       ctx.beginPath();
-      ctx.arc(seal.x + 14, seal.y - 38, 4.5, 0, Math.PI * 2);
+      ctx.moveTo(-10.5, -13);
+      ctx.quadraticCurveTo(-3, -20.5, 5.5, -15.5);
+      ctx.quadraticCurveTo(-1.5, -11.5, -10.5, -13);
+      ctx.closePath();
       ctx.fill();
       ctx.stroke();
 
-      ctx.lineWidth = 2;
+      // Glowing emerald diamond gem on forehead
+      ctx.save();
+      ctx.translate(2.5, -17.5);
+      ctx.fillStyle = "#22c55e";
+      ctx.strokeStyle = "#064e3b";
+      ctx.lineWidth = 1.4;
       ctx.beginPath();
-      ctx.roundRect(bx, by, boxW, boxH, 12);
+      ctx.moveTo(0, -4.8);
+      ctx.lineTo(3.7, 0);
+      ctx.lineTo(0, 4.8);
+      ctx.lineTo(-3.7, 0);
+      ctx.closePath();
       ctx.fill();
       ctx.stroke();
 
-      ctx.fillStyle = "#0f172a";
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-      ctx.fillText(text, bx + boxW / 2, by + boxH / 2 + 0.5);
+      ctx.fillStyle = "#dcfce7";
+      ctx.beginPath();
+      ctx.moveTo(0, -3.0);
+      ctx.lineTo(1.6, -0.4);
+      ctx.lineTo(0, 1.3);
+      ctx.lineTo(-1.6, -0.4);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
 
+      // Expressive emerald-green eyes + thick cream-white CRK eyebrows
+      ctx.fillStyle = "#16a34a";
+      ctx.beginPath();
+      ctx.arc(6.2, -8.5, 2.8, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = "#052e16";
+      ctx.beginPath();
+      ctx.arc(6.8, -8.5, 1.3, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = "#ffffff";
+      ctx.beginPath();
+      ctx.arc(7.4, -9.7, 1.0, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.strokeStyle = "#fefce8";
+      ctx.lineWidth = 2.9;
+      ctx.lineCap = "round";
+      ctx.beginPath();
+      ctx.moveTo(2.5, -12.3);
+      ctx.quadraticCurveTo(7.2, -14.6, 10.8, -11.4);
+      ctx.stroke();
+
+      ctx.strokeStyle = "#2b1408";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(7.2, -4.8);
+      ctx.lineTo(9.8, -4.8);
+      ctx.stroke();
+
+      // Wrapped dark-emerald forest scarf around neck
+      ctx.fillStyle = "#166534";
+      ctx.strokeStyle = "#052e16";
+      ctx.lineWidth = 1.9;
+      ctx.beginPath();
+      ctx.roundRect(-10, -2.5, 19.5, 6.8, 3.4);
+      ctx.fill();
+      ctx.stroke();
+
+      // Outstretched arm holding the companion bird
+      ctx.strokeStyle = "#d9e29c";
+      ctx.lineWidth = 4.6;
+      ctx.lineCap = "round";
+      ctx.beginPath();
+      ctx.moveTo(3.5, 4.5);
+      ctx.lineTo(12.5, 5.5);
+      ctx.stroke();
+
+      ctx.strokeStyle = "#2b1408";
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      ctx.moveTo(3.5, 4.5);
+      ctx.lineTo(12.5, 5.5);
+      ctx.stroke();
+
+      drawCompanionBird();
+
+      // Curved vine-and-clover bow
+      const recoil = shootAnimTimer > 0 ? -3.5 * (shootAnimTimer / 14) : 0;
+      ctx.save();
+      ctx.translate(16 + recoil, -1);
+
+      ctx.strokeStyle = "rgba(220, 252, 231, 0.85)";
+      ctx.lineWidth = 1.3;
+      ctx.beginPath();
+      ctx.moveTo(2, -17);
+      ctx.lineTo(shootAnimTimer > 0 ? -4 : 5, 0);
+      ctx.lineTo(2, 17);
+      ctx.stroke();
+
+      ctx.strokeStyle = "#4ade80";
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.arc(-5, 0, 17, -0.85, 0.85);
+      ctx.stroke();
+
+      ctx.strokeStyle = "#14532d";
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.arc(-5, 0, 17, -0.85, 0.85);
+      ctx.stroke();
+
+      for (const ang of [-0.55, 0.55]) {
+        const bx = -5 + Math.cos(ang) * 17;
+        const by = Math.sin(ang) * 17;
+        ctx.fillStyle = "#86efac";
+        ctx.strokeStyle = "#14532d";
+        ctx.lineWidth = 1;
+        for (let l = 0; l < 4; l++) {
+          const la = (l * Math.PI) / 2;
+          ctx.beginPath();
+          ctx.arc(bx + Math.cos(la) * 2.1, by + Math.sin(la) * 2.1, 2.1, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+        }
+      }
+
+      ctx.restore();
       ctx.restore();
     }
 
-    function drawUI() {
-      ctx.textAlign = "center";
-      ctx.textBaseline = "alphabetic";
-
-      if (state === "playing") {
-        ctx.font = "bold 44px system-ui, sans-serif";
-        ctx.lineWidth = 5;
-        ctx.strokeStyle = "#0f172a";
-        ctx.strokeText(String(score), canvas.width / 2, 72);
-        ctx.fillStyle = "#ffffff";
-        ctx.fillText(String(score), canvas.width / 2, 72);
-
-        const ready = atomicCooldownRemainingMs <= 0 && atomicTimer <= 0;
-        const secLeft = (atomicCooldownRemainingMs / 1000).toFixed(1);
-        ctx.font = "700 12px system-ui, sans-serif";
-        ctx.fillStyle = ready ? "#0369a1" : "#334155";
-        ctx.fillText(
-          ready ? "ATOMIC BREATH: READY [F]" : `ATOMIC COOLDOWN: ${secLeft}s`,
-          canvas.width / 2,
-          96
-        );
-
-        if (activePowerup.type) {
-          const pSec = (activePowerup.remainingMs / 1000).toFixed(1);
-          const labelMap = {
-            speed: "SUPER SPEED",
-            strength: "SUPER STRENGTH",
-            jump: "JUMP BOOST",
-            noclip: "NO CLIP"
-          };
-          ctx.font = "800 13px system-ui, sans-serif";
-          ctx.fillStyle = "#0f172a";
-          ctx.fillText(`${labelMap[activePowerup.type]}: ${pSec}s`, canvas.width / 2, 116);
+    function drawParticles() {
+      for (const p of particles) {
+        const alpha = Math.max(0, Math.min(1, p.life / p.maxLife));
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        ctx.translate(p.x, p.y);
+        if (p.type === "chunk") {
+          ctx.rotate(p.rot);
+          ctx.fillStyle = p.color;
+          ctx.fillRect(-p.w / 2, -p.h / 2, p.w, p.h);
+        } else {
+          ctx.fillStyle = p.color;
+          ctx.beginPath();
+          ctx.arc(0, 0, p.size, 0, Math.PI * 2);
+          ctx.fill();
         }
-      } else if (state === "start") {
-        ctx.font = "bold 28px system-ui, sans-serif";
-        ctx.lineWidth = 5;
-        ctx.strokeStyle = "#0f172a";
-        ctx.strokeText("ATOMIC LOG SEAL", canvas.width / 2, 165);
-        ctx.fillStyle = "#ffffff";
-        ctx.fillText("ATOMIC LOG SEAL", canvas.width / 2, 165);
-
-        ctx.font = "600 16px system-ui, sans-serif";
-        ctx.fillStyle = "#0f172a";
-        ctx.fillText("Space / Click: Flap  •  F / Shift: Atomic Breath", canvas.width / 2, 215);
-        ctx.font = "600 13px system-ui, sans-serif";
-        ctx.fillText("4s Power-ups: Speed • Strength • Jump • No Clip", canvas.width / 2, 240);
-      } else if (state === "gameover") {
-        ctx.fillStyle = "rgba(15, 23, 42, 0.72)";
-        ctx.fillRect(55, 165, canvas.width - 110, 210);
-        ctx.strokeStyle = "#f8fafc";
-        ctx.lineWidth = 2;
-        ctx.strokeRect(55, 165, canvas.width - 110, 210);
-
-        ctx.fillStyle = "#f87171";
-        ctx.font = "bold 32px system-ui, sans-serif";
-        ctx.fillText("GAME OVER", canvas.width / 2, 215);
-
-        ctx.fillStyle = "#ffffff";
-        ctx.font = "600 20px system-ui, sans-serif";
-        ctx.fillText(`Score: ${score}`, canvas.width / 2, 260);
-        ctx.fillText(`Best: ${bestScore}`, canvas.width / 2, 292);
-
-        ctx.fillStyle = "#fde047";
-        ctx.font = "600 16px system-ui, sans-serif";
-        ctx.fillText("Click or press Space to play again", canvas.width / 2, 342);
+        ctx.restore();
       }
     }
 
-    function loop(now) {
-      const dtMs = Math.min(100, Math.max(0, now - lastTimestamp));
-      lastTimestamp = now;
+    function drawOverlayUI() {
+      ctx.save();
+      ctx.fillStyle = "rgba(6, 24, 24, 0.65)";
+      ctx.beginPath();
+      ctx.roundRect(14, 14, 152, 54, 10);
+      ctx.fill();
+      ctx.strokeStyle = "rgba(134, 239, 172, 0.45)";
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
 
-      update(dtMs);
+      ctx.fillStyle = "#ecfdf5";
+      ctx.font = "bold 22px system-ui, sans-serif";
+      ctx.fillText(`Score: ${score}`, 26, 40);
 
+      ctx.fillStyle = "#bbf7d0";
+      ctx.font = "600 12px system-ui, sans-serif";
+      ctx.fillText(`Best: ${bestScore}`, 26, 58);
+
+      const ready = arrowCooldownRemaining <= 0;
+      ctx.fillStyle = ready ? "rgba(34, 197, 94, 0.25)" : "rgba(15, 23, 42, 0.72)";
+      ctx.beginPath();
+      ctx.roundRect(WIDTH - 154, 14, 140, 42, 10);
+      ctx.fill();
+      ctx.strokeStyle = ready ? "#4ade80" : "#64748b";
+      ctx.stroke();
+
+      ctx.fillStyle = ready ? "#86efac" : "#cbd5e1";
+      ctx.font = "bold 12px system-ui, sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText(
+        ready ? "WIND ARROW: READY" : `ARROW CD: ${(arrowCooldownRemaining / 1000).toFixed(1)}s`,
+        WIDTH - 84,
+        39
+      );
+
+      if (activePowerup.type && gameState === "playing") {
+        const meta = POWERUP_META[activePowerup.type];
+        const secLeft = (activePowerup.remainingMs / 1000).toFixed(1);
+        const ratio = Math.max(0, Math.min(1, activePowerup.remainingMs / POWERUP_DURATION_MS));
+
+        ctx.fillStyle = meta.pillBg;
+        ctx.beginPath();
+        ctx.roundRect(WIDTH - 174, 64, 160, 34, 9);
+        ctx.fill();
+        ctx.strokeStyle = meta.border;
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+
+        ctx.fillStyle = "#ffffff";
+        ctx.font = "bold 11px system-ui, sans-serif";
+        ctx.textAlign = "left";
+        ctx.fillText(`${meta.label} (${secLeft}s)`, WIDTH - 164, 78);
+
+        ctx.fillStyle = "rgba(0, 0, 0, 0.35)";
+        ctx.fillRect(WIDTH - 164, 84, 140, 6);
+        ctx.fillStyle = meta.border;
+        ctx.fillRect(WIDTH - 164, 84, 140 * ratio, 6);
+      }
+
+      ctx.restore();
+
+      if (gameState === "start") {
+        ctx.save();
+        ctx.fillStyle = "rgba(4, 18, 18, 0.55)";
+        ctx.fillRect(0, 0, WIDTH, PLAY_HEIGHT);
+
+        ctx.textAlign = "center";
+        ctx.fillStyle = "#86efac";
+        ctx.font = "bold 26px system-ui, sans-serif";
+        ctx.fillText("WIND ARCHER COOKIE", WIDTH / 2, PLAY_HEIGHT * 0.21);
+
+        ctx.fillStyle = "#ecfdf5";
+        ctx.font = "600 13.5px system-ui, sans-serif";
+        ctx.fillText("Weave through forest vines & shoot Gale Arrows", WIDTH / 2, PLAY_HEIGHT * 0.21 + 25);
+
+        ctx.fillStyle = "#fde68a";
+        ctx.font = "bold 12px system-ui, sans-serif";
+        ctx.fillText("Power-Ups: Super Strength • Super Speed • No-Clip • Jump Boost", WIDTH / 2, PLAY_HEIGHT * 0.72);
+
+        ctx.fillStyle = "#bbf7d0";
+        ctx.font = "600 12px system-ui, sans-serif";
+        ctx.fillText("Wind Arrow: 4s Cooldown • Destroys up to 2 Vines", WIDTH / 2, PLAY_HEIGHT * 0.72 + 20);
+
+        ctx.fillStyle = "#ffffff";
+        ctx.font = "bold 16px system-ui, sans-serif";
+        ctx.fillText("Click or Press SPACE to Fly", WIDTH / 2, PLAY_HEIGHT * 0.72 + 44);
+        ctx.restore();
+      } else if (gameState === "gameover") {
+        ctx.save();
+        ctx.fillStyle = "rgba(4, 14, 16, 0.68)";
+        ctx.fillRect(0, 0, WIDTH, PLAY_HEIGHT);
+
+        const boxW = 300;
+        const boxH = 186;
+        const bx = (WIDTH - boxW) / 2;
+        const by = (PLAY_HEIGHT - boxH) / 2;
+
+        ctx.fillStyle = "rgba(9, 36, 36, 0.94)";
+        ctx.beginPath();
+        ctx.roundRect(bx, by, boxW, boxH, 14);
+        ctx.fill();
+        ctx.strokeStyle = "#4ade80";
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        ctx.textAlign = "center";
+        ctx.fillStyle = "#fda4af";
+        ctx.font = "bold 24px system-ui, sans-serif";
+        ctx.fillText("GALE INTERRUPTED", WIDTH / 2, by + 44);
+
+        ctx.fillStyle = "#ecfdf5";
+        ctx.font = "bold 18px system-ui, sans-serif";
+        ctx.fillText(`Score: ${score}   |   Best: ${bestScore}`, WIDTH / 2, by + 84);
+
+        ctx.fillStyle = "#86efac";
+        ctx.font = "600 13px system-ui, sans-serif";
+        ctx.fillText("Press SPACE or Click to Fly Again", WIDTH / 2, by + 132);
+        ctx.restore();
+      }
+    }
+
+    function render() {
       ctx.save();
       if (screenShake > 0) {
-        const sx = (Math.random() - 0.5) * screenShake * 2;
-        const sy = (Math.random() - 0.5) * screenShake * 2;
+        const sx = (Math.random() - 0.5) * screenShake * 1.8;
+        const sy = (Math.random() - 0.5) * screenShake * 1.8;
         ctx.translate(sx, sy);
       }
 
       drawBackground();
-      drawLogs();
-      drawPowerups();
+      drawObstacles();
+      drawPowerupOrbs();
       drawGround();
-      drawAtomicBeam();
-      drawSeal();
-      drawThoughtBubble();
-      drawDebris();
-      drawSteam();
-      drawUI();
+      drawWindArrows();
+      drawWindArcherCookie();
+      drawParticles();
+      drawOverlayUI();
 
       ctx.restore();
+    }
+
+    function loop(now) {
+      const dtMs = now - lastTime;
+      lastTime = now;
+
+      update(dtMs);
+      render();
+
       requestAnimationFrame(loop);
     }
 
+    window.addEventListener("keydown", (e) => {
+      if (e.code === "Space" || e.code === "ArrowUp" || e.code === "KeyW") {
+        e.preventDefault();
+        flap();
+      } else if (e.code === "KeyF" || e.code === "ShiftLeft" || e.code === "ShiftRight") {
+        e.preventDefault();
+        shootWindArrow();
+      }
+    });
+
+    canvas.addEventListener("pointerdown", (e) => {
+      if (e.button === 2) {
+        e.preventDefault();
+        shootWindArrow();
+      } else {
+        flap();
+      }
+    });
+
+    canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+
+    windArrowBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      shootWindArrow();
+    });
+
+    resetRun();
     requestAnimationFrame(loop);
   </script>
 </body>
