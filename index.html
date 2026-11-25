@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Snowy Log Flappy Seal</title>
+  <title>Atomic Breath Chubby Log Seal</title>
   <style>
     * {
       box-sizing: border-box;
@@ -12,9 +12,11 @@
     }
     body {
       display: flex;
+      flex-direction: column;
       justify-content: center;
       align-items: center;
       min-height: 100vh;
+      gap: 12px;
       background: #0f172a;
       font-family: system-ui, -apple-system, sans-serif;
     }
@@ -25,30 +27,93 @@
       box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5);
       cursor: pointer;
     }
+    .controls-bar {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      color: #e2e8f0;
+      font-size: 13px;
+    }
+    button {
+      background: #0284c7;
+      color: #ffffff;
+      border: 1px solid #38bdf8;
+      border-radius: 8px;
+      padding: 7px 14px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button:hover:not(:disabled) {
+      background: #0369a1;
+    }
+    button:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
   </style>
 </head>
 <body>
   <canvas id="gameCanvas" width="400" height="600"></canvas>
+  <div class="controls-bar">
+    <button id="atomicBtn" type="button">Atomic Breath [F / Shift]</button>
+    <span>Flap: Space / Up / Click</span>
+  </div>
 
   <script>
     const canvas = document.getElementById("gameCanvas");
     const ctx = canvas.getContext("2d");
+    const atomicBtn = document.getElementById("atomicBtn");
 
     // Game constants
     const GRAVITY = 0.45;
     const JUMP_FORCE = -7.8;
+    const BOOST_JUMP_FORCE = -10.2;
     const LOG_WIDTH = 62;
     const LOG_GAP = 152;
-    const LOG_SPEED = 2.4;
+    const BASE_LOG_SPEED = 2.4;
+    const SUPER_SPEED_MULTIPLIER = 1.65;
     const LOG_SPAWN_INTERVAL = 95; // frames
     const GROUND_HEIGHT = 80;
     const NOCLIP_WALLS = false;
+
+    // Atomic breath constants (5-second cooldown, single obstacle per blast)
+    const ATOMIC_DURATION = 26; // active beam frames
+    const ATOMIC_COOLDOWN_MS = 5000; // 5 seconds
+
+    // Thought bubble & power-up timing
+    const THOUGHT_INTERVAL_MS = 3000; // changes every 3 seconds
+    const POWERUP_DURATION_MS = 4000; // all power-ups last 4 seconds
+
+    const THOUGHTS = [
+      "more cocoa...",
+      "bloop.",
+      "zappy breath!",
+      "so cozy!",
+      "ghost mode!",
+      "snow day!"
+    ];
+
+    const POWERUP_TYPES = ["speed", "strength", "jump", "noclip"];
 
     // Game state: "start" | "playing" | "gameover"
     let state = "start";
     let score = 0;
     let bestScore = Number(localStorage.getItem("snowyLogChubbySealBestScore") || 0);
     let frames = 0;
+
+    let atomicTimer = 0;
+    let atomicCooldownRemainingMs = 0;
+    let atomicUsedThisBlast = false;
+    let lastTimestamp = performance.now();
+    let screenShake = 0;
+
+    // Thought bubble state
+    let thoughtIndex = 0;
+    let thoughtTimerMs = 0;
+
+    // Active power-up state: { type: "speed" | "strength" | "jump" | "noclip" | null, remainingMs: number }
+    let activePowerup = { type: null, remainingMs: 0 };
+    let powerups = [];
 
     const seal = {
       x: 102,
@@ -61,6 +126,7 @@
 
     let logs = [];
     let steamPuffs = [];
+    let debrisParticles = [];
 
     // Scattered background pine trees (with deterministic pseudo-random scatter)
     const pineTrees = Array.from({ length: 14 }, (_, idx) => {
@@ -94,6 +160,16 @@
       };
     });
 
+    function getCurrentJumpForce() {
+      return activePowerup.type === "jump" ? BOOST_JUMP_FORCE : JUMP_FORCE;
+    }
+
+    function getCurrentLogSpeed() {
+      return activePowerup.type === "speed"
+        ? BASE_LOG_SPEED * SUPER_SPEED_MULTIPLIER
+        : BASE_LOG_SPEED;
+    }
+
     function resetGame() {
       seal.x = 102;
       seal.y = canvas.height / 2 - 40;
@@ -101,69 +177,174 @@
       seal.rotation = 0;
       seal.flipperAngle = 0;
       logs = [];
+      powerups = [];
       steamPuffs = [];
+      debrisParticles = [];
       score = 0;
       frames = 0;
+      atomicTimer = 0;
+      atomicCooldownRemainingMs = 0;
+      atomicUsedThisBlast = false;
+      screenShake = 0;
+      thoughtIndex = 0;
+      thoughtTimerMs = 0;
+      activePowerup = { type: null, remainingMs: 0 };
     }
 
     function flap() {
       if (state === "start") {
         resetGame();
         state = "playing";
-        seal.vy = JUMP_FORCE;
+        seal.vy = getCurrentJumpForce();
         seal.flipperAngle = -0.7;
       } else if (state === "playing") {
-        seal.vy = JUMP_FORCE;
+        seal.vy = getCurrentJumpForce();
         seal.flipperAngle = -0.7;
       } else if (state === "gameover") {
         resetGame();
         state = "playing";
-        seal.vy = JUMP_FORCE;
+        seal.vy = getCurrentJumpForce();
         seal.flipperAngle = -0.7;
       }
+    }
+
+    function triggerAtomicBreath() {
+      if (state !== "playing") return;
+      if (atomicCooldownRemainingMs > 0 || atomicTimer > 0) return;
+      atomicTimer = ATOMIC_DURATION;
+      atomicCooldownRemainingMs = ATOMIC_COOLDOWN_MS;
+      atomicUsedThisBlast = false;
+      screenShake = 7;
     }
 
     window.addEventListener("keydown", (e) => {
       if (e.code === "Space" || e.code === "ArrowUp") {
         e.preventDefault();
         flap();
+      } else if (e.code === "KeyF" || e.code === "ShiftLeft" || e.code === "ShiftRight") {
+        e.preventDefault();
+        triggerAtomicBreath();
       }
     });
 
-    canvas.addEventListener("pointerdown", flap);
+    canvas.addEventListener("pointerdown", (e) => {
+      if (e.button === 2) {
+        e.preventDefault();
+        triggerAtomicBreath();
+      } else {
+        flap();
+      }
+    });
+
+    canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+    atomicBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      triggerAtomicBreath();
+    });
 
     function spawnLog() {
       const minTopHeight = 50;
       const maxTopHeight = canvas.height - GROUND_HEIGHT - LOG_GAP - 50;
       const topHeight =
         Math.floor(Math.random() * (maxTopHeight - minTopHeight + 1)) + minTopHeight;
+      const bottomY = topHeight + LOG_GAP;
 
       logs.push({
         x: canvas.width,
         topHeight,
-        bottomY: topHeight + LOG_GAP,
+        bottomY,
+        topDestroyed: false,
+        bottomDestroyed: false,
         passed: false
       });
+
+      // Spawn a collectible power-up orb in the gap on every second log set
+      if (frames % (LOG_SPAWN_INTERVAL * 2) === 0) {
+        const type = POWERUP_TYPES[Math.floor(Math.random() * POWERUP_TYPES.length)];
+        powerups.push({
+          x: canvas.width + LOG_WIDTH / 2,
+          y: topHeight + LOG_GAP / 2,
+          radius: 14,
+          type,
+          phase: Math.random() * Math.PI * 2,
+          collected: false
+        });
+      }
+    }
+
+    function getMugTopWorldPos() {
+      const fCos = Math.cos(seal.flipperAngle);
+      const fSin = Math.sin(seal.flipperAngle);
+      const mugXInFlipper = 4;
+      const mugTopYInFlipper = 2;
+      const localX = -2 + mugXInFlipper * fCos - mugTopYInFlipper * fSin;
+      const localY = 10 + mugXInFlipper * fSin + mugTopYInFlipper * fCos;
+
+      const sCos = Math.cos(seal.rotation);
+      const sSin = Math.sin(seal.rotation);
+      return {
+        x: seal.x + localX * sCos - localY * sSin,
+        y: seal.y + localX * sSin + localY * sCos
+      };
     }
 
     function spawnSteam() {
       if (steamPuffs.length > 35) return;
-      const angle = seal.rotation;
-      const cos = Math.cos(angle);
-      const sin = Math.sin(angle);
-      const localX = 18;
-      const localY = 1;
-      const mugTopX = seal.x + localX * cos - localY * sin;
-      const mugTopY = seal.y + localX * sin + localY * cos;
+      const mugTop = getMugTopWorldPos();
 
       steamPuffs.push({
-        x: mugTopX + (-2 + Math.random() * 4),
-        y: mugTopY,
+        x: mugTop.x + (-2 + Math.random() * 4),
+        y: mugTop.y,
         vx: -0.7 - Math.random() * 0.7,
         vy: -0.9 - Math.random() * 0.7,
         radius: 2.5 + Math.random() * 2.2,
         life: 24 + Math.floor(Math.random() * 12)
       });
+    }
+
+    function spawnDebris(x, y, count = 14) {
+      const colors = ["#7c4a2d", "#deb887", "#38bdf8", "#facc15"];
+      for (let i = 0; i < count; i++) {
+        const angle = -Math.PI * 0.65 + Math.random() * Math.PI * 1.3;
+        const speed = 1.8 + Math.random() * 4.5;
+        debrisParticles.push({
+          x,
+          y,
+          vx: Math.cos(angle) * speed,
+          vy: Math.sin(angle) * speed,
+          w: 4 + Math.random() * 6,
+          h: 3 + Math.random() * 4,
+          rot: Math.random() * Math.PI * 2,
+          vRot: -0.25 + Math.random() * 0.5,
+          life: 24 + Math.floor(Math.random() * 14),
+          color: colors[Math.floor(Math.random() * colors.length)]
+        });
+      }
+    }
+
+    function getBeamOrigin() {
+      const cos = Math.cos(seal.rotation);
+      const sin = Math.sin(seal.rotation);
+      const localX = 25;
+      const localY = 2;
+      return {
+        x: seal.x + localX * cos - localY * sin,
+        y: seal.y + localX * sin + localY * cos
+      };
+    }
+
+    function beamHitsRect(ox, oy, angle, rx, ry, rw, rh) {
+      const maxLen = canvas.width - ox + 30;
+      const dx = Math.cos(angle);
+      const dy = Math.sin(angle);
+      for (let dist = 0; dist <= maxLen; dist += 10) {
+        const px = ox + dx * dist;
+        const py = oy + dy * dist;
+        if (px >= rx && px <= rx + rw && py >= ry && py <= ry + rh) {
+          return { hit: true, x: px, y: py };
+        }
+      }
+      return { hit: false, x: 0, y: 0 };
     }
 
     function circleRectCollision(cx, cy, cr, rx, ry, rw, rh) {
@@ -174,8 +355,7 @@
       return dx * dx + dy * dy < cr * cr;
     }
 
-    function update() {
-      // Animate snowflakes even on start/gameover screens
+    function update(dtMs) {
       const snowFrames = state === "playing" ? frames : frames * 0.35;
       for (const flake of snowflakes) {
         flake.y += flake.speedY;
@@ -188,9 +368,56 @@
         if (flake.x > canvas.width) flake.x -= canvas.width;
       }
 
-      if (state !== "playing") return;
+      if (screenShake > 0) {
+        screenShake *= 0.85;
+        if (screenShake < 0.2) screenShake = 0;
+      }
+
+      for (let i = debrisParticles.length - 1; i >= 0; i--) {
+        const d = debrisParticles[i];
+        d.x += d.vx;
+        d.y += d.vy;
+        d.vy += 0.22;
+        d.rot += d.vRot;
+        d.life--;
+        if (d.life <= 0) {
+          debrisParticles.splice(i, 1);
+        }
+      }
+
+      if (state !== "playing") {
+        atomicBtn.disabled = true;
+        atomicBtn.textContent = "Atomic Breath [F / Shift]";
+        return;
+      }
 
       frames++;
+      if (atomicTimer > 0) atomicTimer--;
+      if (atomicCooldownRemainingMs > 0) {
+        atomicCooldownRemainingMs = Math.max(0, atomicCooldownRemainingMs - dtMs);
+      }
+
+      // Cycle thought bubble every 3 seconds
+      thoughtTimerMs += dtMs;
+      if (thoughtTimerMs >= THOUGHT_INTERVAL_MS) {
+        thoughtTimerMs %= THOUGHT_INTERVAL_MS;
+        thoughtIndex = (thoughtIndex + 1) % THOUGHTS.length;
+      }
+
+      // Tick active 4-second power-up timer
+      if (activePowerup.type) {
+        activePowerup.remainingMs = Math.max(0, activePowerup.remainingMs - dtMs);
+        if (activePowerup.remainingMs <= 0) {
+          activePowerup = { type: null, remainingMs: 0 };
+        }
+      }
+
+      const secLeft = (atomicCooldownRemainingMs / 1000).toFixed(1);
+      atomicBtn.disabled = atomicCooldownRemainingMs > 0 || atomicTimer > 0;
+      atomicBtn.textContent =
+        atomicCooldownRemainingMs > 0
+          ? `Cooldown: ${secLeft}s`
+          : "Atomic Breath [F / Shift]";
 
       // Seal physics
       seal.vy += GRAVITY;
@@ -198,7 +425,6 @@
       seal.rotation = Math.max(-0.38, Math.min(Math.PI / 2, seal.vy * 0.07));
       seal.flipperAngle += (0.15 - seal.flipperAngle) * 0.14;
 
-      // Gentle steam rising from hot chocolate mug
       if (frames % 7 === 0) {
         spawnSteam();
       }
@@ -214,53 +440,148 @@
         }
       }
 
-      // Ceiling clamp
       if (seal.y - seal.radius < 0) {
         seal.y = seal.radius;
         seal.vy = 0;
       }
 
-      // Ground collision
       if (seal.y + seal.radius >= canvas.height - GROUND_HEIGHT) {
         seal.y = canvas.height - GROUND_HEIGHT - seal.radius;
         endGame();
         return;
       }
 
-      // Spawn logs
       if (frames % LOG_SPAWN_INTERVAL === 0) {
         spawnLog();
       }
 
-      // Move logs & check collisions/scoring
+      const currentSpeed = getCurrentLogSpeed();
+      const groundY = canvas.height - GROUND_HEIGHT;
+
+      // Move & collect power-up orbs
+      for (let i = powerups.length - 1; i >= 0; i--) {
+        const p = powerups[i];
+        p.x -= currentSpeed;
+        p.phase += 0.08;
+        const bobY = p.y + Math.sin(p.phase) * 5;
+
+        const dx = seal.x - p.x;
+        const dy = seal.y - bobY;
+        if (dx * dx + dy * dy <= (seal.radius + p.radius) ** 2) {
+          activePowerup = { type: p.type, remainingMs: POWERUP_DURATION_MS };
+          spawnDebris(p.x, bobY, 10);
+          powerups.splice(i, 1);
+          continue;
+        }
+
+        if (p.x < -30) {
+          powerups.splice(i, 1);
+        }
+      }
+
+      const beamOrigin = atomicTimer > 0 && !atomicUsedThisBlast ? getBeamOrigin() : null;
+
+      let bestTarget = null;
+      if (beamOrigin) {
+        for (const l of logs) {
+          const bottomHeight = groundY - l.bottomY;
+
+          if (!l.topDestroyed && l.topHeight > 0) {
+            const topHit = beamHitsRect(
+              beamOrigin.x,
+              beamOrigin.y,
+              seal.rotation,
+              l.x,
+              0,
+              LOG_WIDTH,
+              l.topHeight
+            );
+            if (topHit.hit) {
+              const dist = Math.hypot(topHit.x - beamOrigin.x, topHit.y - beamOrigin.y);
+              if (!bestTarget || dist < bestTarget.dist) {
+                bestTarget = { log: l, part: "top", x: topHit.x, y: topHit.y, dist };
+              }
+            }
+          }
+
+          if (!l.bottomDestroyed && bottomHeight > 0) {
+            const botHit = beamHitsRect(
+              beamOrigin.x,
+              beamOrigin.y,
+              seal.rotation,
+              l.x,
+              l.bottomY,
+              LOG_WIDTH,
+              bottomHeight
+            );
+            if (botHit.hit) {
+              const dist = Math.hypot(botHit.x - beamOrigin.x, botHit.y - beamOrigin.y);
+              if (!bestTarget || dist < bestTarget.dist) {
+                bestTarget = { log: l, part: "bottom", x: botHit.x, y: botHit.y, dist };
+              }
+            }
+          }
+        }
+
+        if (bestTarget) {
+          if (bestTarget.part === "top") {
+            bestTarget.log.topDestroyed = true;
+          } else {
+            bestTarget.log.bottomDestroyed = true;
+          }
+          atomicUsedThisBlast = true;
+          atomicTimer = 0;
+          screenShake = Math.max(screenShake, 5);
+          spawnDebris(bestTarget.x, bestTarget.y, 14);
+        }
+      }
+
+      const hasSuperStrength = activePowerup.type === "strength";
+      const hasNoClip = NOCLIP_WALLS || activePowerup.type === "noclip";
+
       for (let i = logs.length - 1; i >= 0; i--) {
         const l = logs[i];
-        l.x -= LOG_SPEED;
+        l.x -= currentSpeed;
 
-        if (!NOCLIP_WALLS) {
-          const hitTop = circleRectCollision(
-            seal.x,
-            seal.y,
-            seal.radius - 2,
-            l.x,
-            0,
-            LOG_WIDTH,
-            l.topHeight
-          );
+        const bottomHeight = groundY - l.bottomY;
 
-          const hitBottom = circleRectCollision(
-            seal.x,
-            seal.y,
-            seal.radius - 2,
-            l.x,
-            l.bottomY,
-            LOG_WIDTH,
-            canvas.height - GROUND_HEIGHT - l.bottomY
-          );
+        if (!hasNoClip) {
+          const hitTop =
+            !l.topDestroyed &&
+            circleRectCollision(seal.x, seal.y, seal.radius - 2, l.x, 0, LOG_WIDTH, l.topHeight);
 
-          if (hitTop || hitBottom) {
-            endGame();
-            return;
+          const hitBottom =
+            !l.bottomDestroyed &&
+            circleRectCollision(
+              seal.x,
+              seal.y,
+              seal.radius - 2,
+              l.x,
+              l.bottomY,
+              LOG_WIDTH,
+              bottomHeight
+            );
+
+          if (hitTop) {
+            if (hasSuperStrength) {
+              l.topDestroyed = true;
+              screenShake = Math.max(screenShake, 6);
+              spawnDebris(l.x + LOG_WIDTH / 2, Math.min(seal.y, l.topHeight), 16);
+            } else {
+              endGame();
+              return;
+            }
+          }
+
+          if (hitBottom) {
+            if (hasSuperStrength) {
+              l.bottomDestroyed = true;
+              screenShake = Math.max(screenShake, 6);
+              spawnDebris(l.x + LOG_WIDTH / 2, Math.max(seal.y, l.bottomY), 16);
+            } else {
+              endGame();
+              return;
+            }
           }
         }
 
@@ -281,6 +602,7 @@
 
     function endGame() {
       state = "gameover";
+      atomicTimer = 0;
     }
 
     function drawPineTree(tree, scrollX, groundY) {
@@ -299,11 +621,9 @@
       ctx.translate(screenX, groundY);
       ctx.scale(s, s);
 
-      // Trunk
       ctx.fillStyle = trunkColor;
       ctx.fillRect(-5, -18, 10, 18);
 
-      // Three stacked pine tiers
       const tiers = [
         { y: -16, w: 34, h: 28 },
         { y: -34, w: 27, h: 26 },
@@ -319,7 +639,6 @@
         ctx.closePath();
         ctx.fill();
 
-        // Shaded right slope
         ctx.fillStyle = foliageShade;
         ctx.beginPath();
         ctx.moveTo(0, t.y - t.h);
@@ -328,7 +647,6 @@
         ctx.closePath();
         ctx.fill();
 
-        // Snow dusting along left branch edge
         ctx.strokeStyle = "#f8fafc";
         ctx.lineWidth = 2;
         ctx.beginPath();
@@ -343,7 +661,6 @@
     function drawBackground() {
       const groundY = canvas.height - GROUND_HEIGHT;
 
-      // Crisp winter sky gradient
       const skyGrad = ctx.createLinearGradient(0, 0, 0, groundY);
       skyGrad.addColorStop(0, "#7dd3fc");
       skyGrad.addColorStop(0.65, "#bae6fd");
@@ -351,7 +668,6 @@
       ctx.fillStyle = skyGrad;
       ctx.fillRect(0, 0, canvas.width, groundY);
 
-      // Distant snowy hills
       ctx.fillStyle = "#e2e8f0";
       ctx.beginPath();
       ctx.moveTo(0, groundY);
@@ -361,9 +677,9 @@
       ctx.closePath();
       ctx.fill();
 
-      // Back & front scattered pine trees
-      const backScroll = state === "playing" ? frames * 0.55 : 0;
-      const frontScroll = state === "playing" ? frames * 1.05 : 0;
+      const speedMult = activePowerup.type === "speed" ? SUPER_SPEED_MULTIPLIER : 1;
+      const backScroll = state === "playing" ? frames * 0.55 * speedMult : 0;
+      const frontScroll = state === "playing" ? frames * 1.05 * speedMult : 0;
 
       for (const tree of pineTrees) {
         if (tree.layer === "back") drawPineTree(tree, backScroll, groundY);
@@ -372,7 +688,19 @@
         if (tree.layer === "front") drawPineTree(tree, frontScroll, groundY);
       }
 
-      // Falling snowflakes
+      if (state === "playing" && activePowerup.type === "speed") {
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.55)";
+        ctx.lineWidth = 2;
+        for (let s = 0; s < 8; s++) {
+          const ly = 50 + ((s * 63 + frames * 9) % (groundY - 70));
+          const lx = canvas.width - ((frames * 18 + s * 95) % (canvas.width + 120));
+          ctx.beginPath();
+          ctx.moveTo(lx, ly);
+          ctx.lineTo(lx + 42, ly);
+          ctx.stroke();
+        }
+      }
+
       ctx.fillStyle = "rgba(255, 255, 255, 0.9)";
       for (const flake of snowflakes) {
         ctx.beginPath();
@@ -384,11 +712,9 @@
     function drawSingleLogSegment(x, y, w, h, isTopLog) {
       if (h <= 0) return;
 
-      // Bark cylinder body
       ctx.fillStyle = "#7c4a2d";
       ctx.fillRect(x, y, w, h);
 
-      // Bark vertical grain lines
       ctx.strokeStyle = "#56301b";
       ctx.lineWidth = 2;
       for (const gx of [x + 11, x + 24, x + 39, x + 51]) {
@@ -398,16 +724,13 @@
         ctx.stroke();
       }
 
-      // Highlight strip on left side of log
       ctx.fillStyle = "rgba(253, 230, 138, 0.16)";
       ctx.fillRect(x + 4, y, 6, h);
 
-      // Outer bark border
       ctx.strokeStyle = "#3b1f10";
       ctx.lineWidth = 3;
       ctx.strokeRect(x, y, w, h);
 
-      // Cut wood end-cap facing the gap
       const capHeight = 18;
       const capY = isTopLog ? y + h - capHeight : y;
       const capX = x - 3;
@@ -419,7 +742,6 @@
       ctx.lineWidth = 2.6;
       ctx.strokeRect(capX, capY, capW, capHeight);
 
-      // Concentric wood ring lines inside the cut end
       ctx.strokeStyle = "#9c6644";
       ctx.lineWidth = 1.4;
       ctx.beginPath();
@@ -429,13 +751,10 @@
       ctx.lineTo(capX + capW - 5, capY + 12);
       ctx.stroke();
 
-      // Light snow cap on top of top-edge or bottom-edge exposed ends
-      if (!isTopLog && y + h >= canvas.height - GROUND_HEIGHT - 2) {
-        // Bottom log rests into snow ground
-      } else if (isTopLog) {
+      if (isTopLog) {
         ctx.fillStyle = "#f8fafc";
         ctx.fillRect(capX + 1, capY + capHeight - 4, capW - 2, 4);
-      } else {
+      } else if (y + h < canvas.height - GROUND_HEIGHT - 2) {
         ctx.fillStyle = "#f8fafc";
         ctx.fillRect(capX + 1, capY, capW - 2, 4);
       }
@@ -444,33 +763,119 @@
     function drawLogs() {
       const groundY = canvas.height - GROUND_HEIGHT;
       for (const l of logs) {
-        drawSingleLogSegment(l.x, 0, LOG_WIDTH, l.topHeight, true);
-        drawSingleLogSegment(l.x, l.bottomY, LOG_WIDTH, groundY - l.bottomY, false);
+        if (!l.topDestroyed) {
+          drawSingleLogSegment(l.x, 0, LOG_WIDTH, l.topHeight, true);
+        }
+        if (!l.bottomDestroyed) {
+          drawSingleLogSegment(l.x, l.bottomY, LOG_WIDTH, groundY - l.bottomY, false);
+        }
+      }
+    }
+
+    function drawPowerups() {
+      for (const p of powerups) {
+        const bobY = p.y + Math.sin(p.phase) * 5;
+        let fill = "#f59e0b";
+        let badge = "⚡";
+        if (p.type === "strength") {
+          fill = "#ef4444";
+          badge = "💪";
+        } else if (p.type === "jump") {
+          fill = "#10b981";
+          badge = "⬆";
+        } else if (p.type === "noclip") {
+          fill = "#8b5cf6";
+          badge = "👻";
+        }
+
+        ctx.save();
+        ctx.translate(p.x, bobY);
+
+        ctx.fillStyle = fill;
+        ctx.strokeStyle = "#ffffff";
+        ctx.lineWidth = 2.4;
+        ctx.beginPath();
+        ctx.arc(0, 0, p.radius, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.fillStyle = "#ffffff";
+        ctx.font = "bold 13px system-ui, sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(badge, 0, 1);
+
+        ctx.restore();
       }
     }
 
     function drawGround() {
       const groundY = canvas.height - GROUND_HEIGHT;
 
-      // Top snow blanket
       ctx.fillStyle = "#f8fafc";
       ctx.fillRect(0, groundY, canvas.width, 20);
 
-      // Soft blue-tinted snow shadow under crust
       ctx.fillStyle = "#cbd5e1";
       ctx.fillRect(0, groundY + 16, canvas.width, 6);
 
-      // Frozen winter earth below snow
       ctx.fillStyle = "#64748b";
       ctx.fillRect(0, groundY + 22, canvas.width, GROUND_HEIGHT - 22);
 
-      // Top snow line
       ctx.strokeStyle = "#475569";
       ctx.lineWidth = 2.5;
       ctx.beginPath();
       ctx.moveTo(0, groundY);
       ctx.lineTo(canvas.width, groundY);
       ctx.stroke();
+    }
+
+    function drawAtomicBeam() {
+      if (atomicTimer <= 0) return;
+
+      const origin = getBeamOrigin();
+      const beamLen = canvas.width - origin.x + 25;
+      const pulse = 1 + Math.sin(frames * 1.1) * 0.22;
+      const fade = Math.min(1, atomicTimer / 6);
+
+      ctx.save();
+      ctx.translate(origin.x, origin.y);
+      ctx.rotate(seal.rotation);
+      ctx.globalAlpha = fade;
+
+      ctx.fillStyle = "rgba(56, 189, 248, 0.35)";
+      ctx.beginPath();
+      ctx.roundRect(0, -16 * pulse, beamLen, 32 * pulse, 12);
+      ctx.fill();
+
+      ctx.fillStyle = "rgba(14, 165, 233, 0.85)";
+      ctx.beginPath();
+      ctx.roundRect(0, -9 * pulse, beamLen, 18 * pulse, 8);
+      ctx.fill();
+
+      ctx.fillStyle = "#f0f9ff";
+      ctx.beginPath();
+      ctx.roundRect(0, -4 * pulse, beamLen, 8 * pulse, 4);
+      ctx.fill();
+
+      ctx.fillStyle = "#7dd3fc";
+      ctx.beginPath();
+      ctx.arc(0, 0, 11 * pulse, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.restore();
+    }
+
+    function drawDebris() {
+      for (const d of debrisParticles) {
+        const alpha = Math.max(0, Math.min(1, d.life / 30));
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        ctx.translate(d.x, d.y);
+        ctx.rotate(d.rot);
+        ctx.fillStyle = d.color;
+        ctx.fillRect(-d.w / 2, -d.h / 2, d.w, d.h);
+        ctx.restore();
+      }
     }
 
     function drawSteam() {
@@ -488,7 +893,6 @@
       ctx.translate(-1, -14);
       ctx.rotate(-0.08);
 
-      // Pom-pom on top
       ctx.fillStyle = "#f8fafc";
       ctx.strokeStyle = "#1e293b";
       ctx.lineWidth = 2.2;
@@ -497,7 +901,6 @@
       ctx.fill();
       ctx.stroke();
 
-      // Beanie crown
       ctx.fillStyle = "#2563eb";
       ctx.beginPath();
       ctx.arc(2, 1, 13.5, Math.PI, 0);
@@ -505,7 +908,6 @@
       ctx.fill();
       ctx.stroke();
 
-      // Knit stripe
       ctx.strokeStyle = "#93c5fd";
       ctx.lineWidth = 1.6;
       ctx.beginPath();
@@ -513,7 +915,6 @@
       ctx.lineTo(13.5, -5.5);
       ctx.stroke();
 
-      // Folded ribbed cuff
       ctx.fillStyle = "#1d4ed8";
       ctx.strokeStyle = "#1e293b";
       ctx.lineWidth = 2.2;
@@ -522,7 +923,6 @@
       ctx.fill();
       ctx.stroke();
 
-      // Ribbed vertical lines
       ctx.strokeStyle = "#1e3a8a";
       ctx.lineWidth = 1.4;
       for (let rx = -8; rx <= 12; rx += 5) {
@@ -536,7 +936,6 @@
     }
 
     function drawFullBodyDownJacket() {
-      // Full-body quilted down jacket enveloping the chubby torso & back
       ctx.save();
       ctx.translate(-1, 3);
       ctx.rotate(-0.04);
@@ -545,13 +944,11 @@
       ctx.strokeStyle = "#1e293b";
       ctx.lineWidth = 2.5;
 
-      // Full round puffy body shell
       ctx.beginPath();
       ctx.ellipse(-1, 1, 23.5, 19, 0, 0, Math.PI * 2);
       ctx.fill();
       ctx.stroke();
 
-      // Quilted vertical baffle lines across the full jacket
       ctx.strokeStyle = "#991b1b";
       ctx.lineWidth = 1.8;
       for (const bx of [-14, -6, 2, 10]) {
@@ -561,7 +958,6 @@
         ctx.stroke();
       }
 
-      // Cozy high collar around neck
       ctx.fillStyle = "#dc2626";
       ctx.strokeStyle = "#1e293b";
       ctx.lineWidth = 2.2;
@@ -573,37 +969,34 @@
       ctx.restore();
     }
 
-    function drawHotChocolateMug() {
+    function drawHotChocolateMugAtHand() {
       ctx.save();
-      ctx.translate(18, 9);
+      ctx.translate(4, 8);
+      ctx.rotate(-seal.flipperAngle * 0.65);
 
-      // Mug handle
       ctx.strokeStyle = "#1e293b";
       ctx.lineWidth = 2.2;
       ctx.beginPath();
-      ctx.arc(6.5, 0, 3.6, -Math.PI / 2, Math.PI / 2);
+      ctx.arc(-6.2, 0, 3.4, Math.PI / 2, (Math.PI * 3) / 2);
       ctx.stroke();
 
-      // Ceramic mug body
       ctx.fillStyle = "#fef3c7";
       ctx.strokeStyle = "#1e293b";
       ctx.lineWidth = 2.2;
       ctx.beginPath();
-      ctx.roundRect(-6, -6, 12, 12, 2.5);
+      ctx.roundRect(-5.5, -6, 11, 11.5, 2.5);
       ctx.fill();
       ctx.stroke();
 
-      // Rich hot chocolate liquid top
       ctx.fillStyle = "#5c2c16";
       ctx.beginPath();
-      ctx.ellipse(0, -5.5, 4.8, 1.8, 0, 0, Math.PI * 2);
+      ctx.ellipse(0, -5.4, 4.4, 1.7, 0, 0, Math.PI * 2);
       ctx.fill();
 
-      // Floating marshmallows
       ctx.fillStyle = "#ffffff";
       ctx.beginPath();
-      ctx.roundRect(-3.2, -7.5, 3, 2.6, 0.8);
-      ctx.roundRect(0.6, -7.2, 2.8, 2.5, 0.8);
+      ctx.roundRect(-3.0, -7.4, 2.8, 2.4, 0.8);
+      ctx.roundRect(0.5, -7.1, 2.6, 2.3, 0.8);
       ctx.fill();
 
       ctx.restore();
@@ -612,6 +1005,23 @@
     function drawSeal() {
       ctx.save();
       ctx.translate(seal.x, seal.y);
+
+      if (activePowerup.type) {
+        let auraColor = "rgba(245, 158, 11, 0.45)";
+        if (activePowerup.type === "strength") auraColor = "rgba(239, 68, 68, 0.45)";
+        if (activePowerup.type === "jump") auraColor = "rgba(16, 185, 129, 0.45)";
+        if (activePowerup.type === "noclip") auraColor = "rgba(139, 92, 246, 0.45)";
+
+        ctx.fillStyle = auraColor;
+        ctx.beginPath();
+        ctx.arc(0, 0, seal.radius + 9 + Math.sin(frames * 0.3) * 2, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      if (activePowerup.type === "noclip") {
+        ctx.globalAlpha = 0.65;
+      }
+
       ctx.rotate(seal.rotation);
 
       const wag = state === "playing" ? Math.sin(frames * 0.25) * 0.2 : 0;
@@ -639,7 +1049,7 @@
       ctx.fill();
       ctx.stroke();
 
-      // Full-body quilted down jacket covering the body
+      // Full-body quilted down jacket
       drawFullBodyDownJacket();
 
       // Soft rosy cheek blush
@@ -647,19 +1057,6 @@
       ctx.beginPath();
       ctx.ellipse(9, 4.5, 4.5, 2.8, 0, 0, Math.PI * 2);
       ctx.fill();
-
-      // Jacket-sleeved flipper
-      ctx.save();
-      ctx.translate(-2, 10);
-      ctx.rotate(seal.flipperAngle);
-      ctx.fillStyle = "#dc2626";
-      ctx.strokeStyle = "#1e293b";
-      ctx.lineWidth = 2.2;
-      ctx.beginPath();
-      ctx.ellipse(-2, 6, 9, 5, 0.55, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.stroke();
-      ctx.restore();
 
       // Plump snout / muzzle
       ctx.fillStyle = "#cbd5e1";
@@ -688,7 +1085,7 @@
       ctx.arc(10.5, -6.8, 2.4, 0, Math.PI * 2);
       ctx.fill();
 
-      // Secondary lower catchlight for puppy-eye sparkle
+      // Secondary lower catchlight
       ctx.beginPath();
       ctx.arc(6.6, -2.5, 1.2, 0, Math.PI * 2);
       ctx.fill();
@@ -707,15 +1104,70 @@
       ctx.lineTo(20, 12);
       ctx.stroke();
 
-      // Winter beanie & hot chocolate mug
+      // Winter beanie
       drawWinterBeanie();
-      drawHotChocolateMug();
+
+      // Jacket-sleeved flipper holding hot chocolate mug
+      ctx.save();
+      ctx.translate(-2, 10);
+      ctx.rotate(seal.flipperAngle);
+
+      ctx.fillStyle = "#dc2626";
+      ctx.strokeStyle = "#1e293b";
+      ctx.lineWidth = 2.2;
+      ctx.beginPath();
+      ctx.ellipse(-2, 6, 9, 5, 0.55, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+
+      drawHotChocolateMugAtHand();
+
+      ctx.restore();
+      ctx.restore();
+    }
+
+    function drawThoughtBubble() {
+      if (state !== "playing") return;
+
+      const text = THOUGHTS[thoughtIndex];
+      ctx.save();
+      ctx.font = "bold 12px system-ui, sans-serif";
+      const textW = ctx.measureText(text).width;
+      const boxW = Math.max(64, textW + 18);
+      const boxH = 26;
+      const bx = Math.min(canvas.width - boxW - 10, seal.x + 12);
+      const by = Math.max(12, seal.y - 68);
+
+      ctx.fillStyle = "#ffffff";
+      ctx.strokeStyle = "#1e293b";
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      ctx.arc(seal.x + 8, seal.y - 30, 3, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.arc(seal.x + 14, seal.y - 38, 4.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.roundRect(bx, by, boxW, boxH, 12);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = "#0f172a";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(text, bx + boxW / 2, by + boxH / 2 + 0.5);
 
       ctx.restore();
     }
 
     function drawUI() {
       ctx.textAlign = "center";
+      ctx.textBaseline = "alphabetic";
 
       if (state === "playing") {
         ctx.font = "bold 44px system-ui, sans-serif";
@@ -724,17 +1176,42 @@
         ctx.strokeText(String(score), canvas.width / 2, 72);
         ctx.fillStyle = "#ffffff";
         ctx.fillText(String(score), canvas.width / 2, 72);
+
+        const ready = atomicCooldownRemainingMs <= 0 && atomicTimer <= 0;
+        const secLeft = (atomicCooldownRemainingMs / 1000).toFixed(1);
+        ctx.font = "700 12px system-ui, sans-serif";
+        ctx.fillStyle = ready ? "#0369a1" : "#334155";
+        ctx.fillText(
+          ready ? "ATOMIC BREATH: READY [F]" : `ATOMIC COOLDOWN: ${secLeft}s`,
+          canvas.width / 2,
+          96
+        );
+
+        if (activePowerup.type) {
+          const pSec = (activePowerup.remainingMs / 1000).toFixed(1);
+          const labelMap = {
+            speed: "SUPER SPEED",
+            strength: "SUPER STRENGTH",
+            jump: "JUMP BOOST",
+            noclip: "NO CLIP"
+          };
+          ctx.font = "800 13px system-ui, sans-serif";
+          ctx.fillStyle = "#0f172a";
+          ctx.fillText(`${labelMap[activePowerup.type]}: ${pSec}s`, canvas.width / 2, 116);
+        }
       } else if (state === "start") {
-        ctx.font = "bold 32px system-ui, sans-serif";
+        ctx.font = "bold 28px system-ui, sans-serif";
         ctx.lineWidth = 5;
         ctx.strokeStyle = "#0f172a";
-        ctx.strokeText("SNOWY LOG SEAL", canvas.width / 2, 165);
+        ctx.strokeText("ATOMIC LOG SEAL", canvas.width / 2, 165);
         ctx.fillStyle = "#ffffff";
-        ctx.fillText("SNOWY LOG SEAL", canvas.width / 2, 165);
+        ctx.fillText("ATOMIC LOG SEAL", canvas.width / 2, 165);
 
-        ctx.font = "600 18px system-ui, sans-serif";
+        ctx.font = "600 16px system-ui, sans-serif";
         ctx.fillStyle = "#0f172a";
-        ctx.fillText("Press Space, Up, or Click to Flap", canvas.width / 2, 220);
+        ctx.fillText("Space / Click: Flap  •  F / Shift: Atomic Breath", canvas.width / 2, 215);
+        ctx.font = "600 13px system-ui, sans-serif";
+        ctx.fillText("4s Power-ups: Speed • Strength • Jump • No Clip", canvas.width / 2, 240);
       } else if (state === "gameover") {
         ctx.fillStyle = "rgba(15, 23, 42, 0.72)";
         ctx.fillRect(55, 165, canvas.width - 110, 210);
@@ -757,18 +1234,35 @@
       }
     }
 
-    function loop() {
-      update();
+    function loop(now) {
+      const dtMs = Math.min(100, Math.max(0, now - lastTimestamp));
+      lastTimestamp = now;
+
+      update(dtMs);
+
+      ctx.save();
+      if (screenShake > 0) {
+        const sx = (Math.random() - 0.5) * screenShake * 2;
+        const sy = (Math.random() - 0.5) * screenShake * 2;
+        ctx.translate(sx, sy);
+      }
+
       drawBackground();
       drawLogs();
+      drawPowerups();
       drawGround();
-      drawSteam();
+      drawAtomicBeam();
       drawSeal();
+      drawThoughtBubble();
+      drawDebris();
+      drawSteam();
       drawUI();
+
+      ctx.restore();
       requestAnimationFrame(loop);
     }
 
-    loop();
+    requestAnimationFrame(loop);
   </script>
 </body>
 </html>
