@@ -110,7 +110,6 @@
     const ctx = canvas.getContext("2d");
     const windArrowBtn = document.getElementById("windArrowBtn");
 
-    // World & gameplay constants
     const WIDTH = canvas.width;
     const HEIGHT = canvas.height;
     const GROUND_HEIGHT = 86;
@@ -122,19 +121,28 @@
     const MAX_FALL_SPEED = 9.5;
 
     const OBSTACLE_WIDTH = 56;
-    const OBSTACLE_GAP = 158;
+    const GAP_SIZES = {
+      small: 116,
+      normal: 158,
+      big: 212
+    };
     const BASE_OBSTACLE_SPEED = 2.55;
     const SUPER_SPEED_MULTIPLIER = 1.65;
     const SPAWN_INTERVAL_FRAMES = 98;
 
-    // Wind Arrow settings: 4.0s cooldown, destroys up to 2 obstacles
     const ARROW_COOLDOWN_MS = 4000;
     const ARROW_SPEED = 11.5;
     const ARROW_MAX_DESTROYS = 2;
 
-    // Power-up constants
     const POWERUP_DURATION_MS = 5000;
-    const POWERUP_TYPES = ["strength", "speed", "noclip", "jump"];
+    const RAINBOW_DURATION_MS = 10000;
+    const POWERUP_WEIGHTS = [
+      { type: "strength", weight: 24.25 },
+      { type: "speed", weight: 24.25 },
+      { type: "noclip", weight: 24.25 },
+      { type: "jump", weight: 24.25 },
+      { type: "rainbow", weight: 3 }
+    ];
     const POWERUP_META = {
       strength: {
         label: "SUPER STRENGTH",
@@ -167,23 +175,658 @@
         glow: "rgba(56, 189, 248, 0.45)",
         pillBg: "rgba(12, 74, 110, 0.85)",
         border: "#bae6fd"
+      },
+      rainbow: {
+        label: "RAINBOW OVERDRIVE",
+        badge: "RNBW",
+        color: "#f472b6",
+        glow: "rgba(244, 114, 182, 0.55)",
+        pillBg: "rgba(30, 27, 75, 0.88)",
+        border: "#f9a8d4"
       }
     };
 
-    // Game state
-    let gameState = "start"; // "start" | "playing" | "gameover"
+    const CHECKPOINT_MILESTONES = [
+      { level: 30, name: "GRASSLAND CHECKPOINT", biome: "grassland" },
+      { level: 60, name: "FLOWER MEADOW CHECKPOINT", biome: "meadow" },
+      { level: 90, name: "DEEP FOREST CHECKPOINT", biome: "forest" },
+      { level: 100, name: "VOLCANO CHECKPOINT", biome: "volcano" }
+    ];
+
+    // ---------------- SAFE WEB AUDIO ENGINE ----------------
+    let audioCtx = null;
+    let masterOut = null;
+    let forestAmbience = null;
+    let chirpTimerMs = 1900;
+    let lastSoundTime = {
+      jump: 0,
+      phase: 0,
+      smash: 0,
+      death: 0,
+      star: 0,
+      dance: 0,
+      sonic: 0,
+      whizz: 0,
+      wahhooo: 0
+    };
+
+    function ensureAudioContext() {
+      try {
+        if (!audioCtx) {
+          const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+          if (!AudioContextClass) return null;
+          audioCtx = new AudioContextClass();
+          masterOut = audioCtx.createGain();
+          masterOut.gain.setValueAtTime(1.0, audioCtx.currentTime);
+          masterOut.connect(audioCtx.destination);
+        }
+        if (audioCtx.state === "suspended") {
+          audioCtx.resume().catch(() => {});
+        }
+        if (audioCtx.state === "running" && !forestAmbience) {
+          initForestAmbience(audioCtx);
+        }
+        return audioCtx.state === "running" ? audioCtx : null;
+      } catch (_) {
+        return null;
+      }
+    }
+
+    function initForestAmbience(ctxAudio) {
+      try {
+        const len = Math.floor(ctxAudio.sampleRate * 1.2);
+        const buf = ctxAudio.createBuffer(1, len, ctxAudio.sampleRate);
+        const ch = buf.getChannelData(0);
+        let prev = 0;
+        for (let i = 0; i < len; i++) {
+          const w = Math.random() * 2 - 1;
+          prev = (prev + 0.025 * w) / 1.025;
+          ch[i] = prev * 2.0;
+        }
+
+        const src = ctxAudio.createBufferSource();
+        src.buffer = buf;
+        src.loop = true;
+
+        const filter = ctxAudio.createBiquadFilter();
+        filter.type = "bandpass";
+        filter.frequency.setValueAtTime(480, ctxAudio.currentTime);
+        filter.Q.setValueAtTime(1.0, ctxAudio.currentTime);
+
+        const gain = ctxAudio.createGain();
+        gain.gain.setValueAtTime(0.0001, ctxAudio.currentTime);
+
+        src.connect(filter);
+        filter.connect(gain);
+        gain.connect(masterOut);
+        src.start();
+
+        forestAmbience = { gain };
+      } catch (_) {
+        forestAmbience = null;
+      }
+    }
+
+    function updateForestAmbience(dtMs) {
+      try {
+        if (!audioCtx || audioCtx.state !== "running") return;
+        if (!forestAmbience) {
+          initForestAmbience(audioCtx);
+        }
+        if (!forestAmbience) return;
+
+        const active = gameState === "playing" || gameState === "start";
+        const target = active ? (getCurrentBiome() === "volcano" ? 0.02 : 0.065) : 0.0001;
+        forestAmbience.gain.gain.setTargetAtTime(target, audioCtx.currentTime, 0.15);
+
+        if (!active || getCurrentBiome() === "volcano") return;
+
+        chirpTimerMs -= dtMs;
+        if (chirpTimerMs <= 0) {
+          chirpTimerMs = 2000 + Math.random() * 2500;
+          playForestBirdChirp();
+        }
+      } catch (_) {}
+    }
+
+    function playForestBirdChirp() {
+      try {
+        const ctxAudio = ensureAudioContext();
+        if (!ctxAudio) return;
+        const now = ctxAudio.currentTime;
+        const f = 2200 + Math.random() * 950;
+
+        for (let i = 0; i < 2; i++) {
+          const t = now + i * 0.11;
+          const osc = ctxAudio.createOscillator();
+          const g = ctxAudio.createGain();
+          osc.type = "sine";
+          osc.frequency.setValueAtTime(f, t);
+          osc.frequency.exponentialRampToValueAtTime(f * 1.25, t + 0.055);
+          g.gain.setValueAtTime(0.0001, t);
+          g.gain.linearRampToValueAtTime(0.022, t + 0.015);
+          g.gain.exponentialRampToValueAtTime(0.0001, t + 0.085);
+          osc.connect(g);
+          g.connect(masterOut);
+          osc.start(t);
+          osc.stop(t + 0.09);
+        }
+      } catch (_) {}
+    }
+
+    // Loud Mario "WAH-HOOO!!!" sound when collecting a Jump Boost orb
+    function playMarioWahHoooSound() {
+      try {
+        const nowMs = performance.now();
+        if (nowMs - lastSoundTime.wahhooo < 140) return;
+        lastSoundTime.wahhooo = nowMs;
+
+        const ctxAudio = ensureAudioContext();
+        if (!ctxAudio) return;
+        const t = ctxAudio.currentTime;
+
+        const wahhoooBoost = ctxAudio.createGain();
+        wahhoooBoost.gain.setValueAtTime(1.45, t);
+        wahhoooBoost.connect(masterOut);
+
+        // Syllable 1: loud punchy "WAH!" (0.00s - 0.16s)
+        const wahOsc = ctxAudio.createOscillator();
+        const wahHarm = ctxAudio.createOscillator();
+        const wahFormant1 = ctxAudio.createBiquadFilter();
+        const wahFormant2 = ctxAudio.createBiquadFilter();
+        const wahGain = ctxAudio.createGain();
+
+        wahOsc.type = "sawtooth";
+        wahHarm.type = "square";
+
+        wahOsc.frequency.setValueAtTime(260, t);
+        wahOsc.frequency.exponentialRampToValueAtTime(455, t + 0.14);
+
+        wahHarm.frequency.setValueAtTime(520, t);
+        wahHarm.frequency.exponentialRampToValueAtTime(910, t + 0.14);
+
+        wahFormant1.type = "bandpass";
+        wahFormant1.frequency.setValueAtTime(560, t);
+        wahFormant1.frequency.exponentialRampToValueAtTime(1550, t + 0.15);
+        wahFormant1.Q.setValueAtTime(2.4, t);
+
+        wahFormant2.type = "peaking";
+        wahFormant2.frequency.setValueAtTime(1900, t);
+        wahFormant2.gain.setValueAtTime(9, t);
+        wahFormant2.Q.setValueAtTime(2.0, t);
+
+        wahGain.gain.setValueAtTime(0.001, t);
+        wahGain.gain.linearRampToValueAtTime(0.88, t + 0.015);
+        wahGain.gain.setValueAtTime(0.82, t + 0.12);
+        wahGain.gain.exponentialRampToValueAtTime(0.001, t + 0.17);
+
+        wahOsc.connect(wahFormant1);
+        wahHarm.connect(wahFormant1);
+        wahFormant1.connect(wahFormant2);
+        wahFormant2.connect(wahGain);
+        wahGain.connect(wahhoooBoost);
+
+        wahOsc.start(t);
+        wahHarm.start(t);
+        wahOsc.stop(t + 0.18);
+        wahHarm.stop(t + 0.18);
+
+        // Syllable 2: loud soaring "HOOO!!!" (0.14s - 0.54s) with joyful pitch lift & vibrato
+        const hoooStart = t + 0.14;
+        const hoooDur = 0.40;
+
+        const hoooOsc = ctxAudio.createOscillator();
+        const hoooHarm = ctxAudio.createOscillator();
+        const vibrato = ctxAudio.createOscillator();
+        const vibratoGain = ctxAudio.createGain();
+        const hoooFilter = ctxAudio.createBiquadFilter();
+        const hoooGain = ctxAudio.createGain();
+
+        hoooOsc.type = "sawtooth";
+        hoooHarm.type = "square";
+
+        hoooOsc.frequency.setValueAtTime(360, hoooStart);
+        hoooOsc.frequency.exponentialRampToValueAtTime(840, hoooStart + hoooDur * 0.88);
+
+        hoooHarm.frequency.setValueAtTime(720, hoooStart);
+        hoooHarm.frequency.exponentialRampToValueAtTime(1680, hoooStart + hoooDur * 0.88);
+
+        vibrato.type = "sine";
+        vibrato.frequency.setValueAtTime(18, hoooStart);
+        vibratoGain.gain.setValueAtTime(18, hoooStart);
+        vibrato.connect(vibratoGain);
+        vibratoGain.connect(hoooOsc.frequency);
+
+        hoooFilter.type = "bandpass";
+        hoooFilter.frequency.setValueAtTime(820, hoooStart);
+        hoooFilter.frequency.exponentialRampToValueAtTime(2400, hoooStart + hoooDur * 0.85);
+        hoooFilter.Q.setValueAtTime(1.9, hoooStart);
+
+        hoooGain.gain.setValueAtTime(0.001, hoooStart);
+        hoooGain.gain.linearRampToValueAtTime(0.95, hoooStart + 0.02);
+        hoooGain.gain.setValueAtTime(0.90, hoooStart + hoooDur * 0.7);
+        hoooGain.gain.exponentialRampToValueAtTime(0.001, hoooStart + hoooDur);
+
+        hoooOsc.connect(hoooFilter);
+        hoooHarm.connect(hoooFilter);
+        hoooFilter.connect(hoooGain);
+        hoooGain.connect(wahhoooBoost);
+
+        hoooOsc.start(hoooStart);
+        hoooHarm.start(hoooStart);
+        vibrato.start(hoooStart);
+        hoooOsc.stop(hoooStart + hoooDur + 0.02);
+        hoooHarm.stop(hoooStart + hoooDur + 0.02);
+        vibrato.stop(hoooStart + hoooDur + 0.02);
+      } catch (_) {}
+    }
+
+    // Sonic boom / high-speed burst sound when picking up Super Speed
+    function playSonicSpeedSound() {
+      try {
+        const nowMs = performance.now();
+        if (nowMs - lastSoundTime.sonic < 120) return;
+        lastSoundTime.sonic = nowMs;
+
+        const ctxAudio = ensureAudioContext();
+        if (!ctxAudio) return;
+        const t = ctxAudio.currentTime;
+
+        const boom = ctxAudio.createOscillator();
+        const boomGain = ctxAudio.createGain();
+        boom.type = "sine";
+        boom.frequency.setValueAtTime(190, t);
+        boom.frequency.exponentialRampToValueAtTime(42, t + 0.26);
+        boomGain.gain.setValueAtTime(0.001, t);
+        boomGain.gain.linearRampToValueAtTime(0.36, t + 0.015);
+        boomGain.gain.exponentialRampToValueAtTime(0.001, t + 0.28);
+        boom.connect(boomGain);
+        boomGain.connect(masterOut);
+        boom.start(t);
+        boom.stop(t + 0.29);
+
+        const sweep = ctxAudio.createOscillator();
+        const sweepGain = ctxAudio.createGain();
+        sweep.type = "sawtooth";
+        sweep.frequency.setValueAtTime(260, t);
+        sweep.frequency.exponentialRampToValueAtTime(1650, t + 0.14);
+        sweep.frequency.exponentialRampToValueAtTime(420, t + 0.34);
+
+        const sweepFilter = ctxAudio.createBiquadFilter();
+        sweepFilter.type = "bandpass";
+        sweepFilter.frequency.setValueAtTime(900, t);
+        sweepFilter.frequency.exponentialRampToValueAtTime(2400, t + 0.14);
+        sweepFilter.Q.setValueAtTime(1.8, t);
+
+        sweepGain.gain.setValueAtTime(0.001, t);
+        sweepGain.gain.linearRampToValueAtTime(0.18, t + 0.03);
+        sweepGain.gain.exponentialRampToValueAtTime(0.001, t + 0.35);
+
+        sweep.connect(sweepFilter);
+        sweepFilter.connect(sweepGain);
+        sweepGain.connect(masterOut);
+        sweep.start(t);
+        sweep.stop(t + 0.36);
+
+        const len = Math.floor(ctxAudio.sampleRate * 0.34);
+        const buf = ctxAudio.createBuffer(1, len, ctxAudio.sampleRate);
+        const ch = buf.getChannelData(0);
+        for (let i = 0; i < len; i++) {
+          const env = Math.pow(1 - i / len, 1.45);
+          ch[i] = (Math.random() * 2 - 1) * env;
+        }
+        const noise = ctxAudio.createBufferSource();
+        noise.buffer = buf;
+
+        const airFilter = ctxAudio.createBiquadFilter();
+        airFilter.type = "bandpass";
+        airFilter.frequency.setValueAtTime(600, t);
+        airFilter.frequency.exponentialRampToValueAtTime(2800, t + 0.12);
+        airFilter.frequency.exponentialRampToValueAtTime(750, t + 0.34);
+        airFilter.Q.setValueAtTime(1.2, t);
+
+        const airGain = ctxAudio.createGain();
+        airGain.gain.setValueAtTime(0.001, t);
+        airGain.gain.linearRampToValueAtTime(0.32, t + 0.02);
+        airGain.gain.exponentialRampToValueAtTime(0.001, t + 0.34);
+
+        noise.connect(airFilter);
+        airFilter.connect(airGain);
+        airGain.connect(masterOut);
+        noise.start(t);
+      } catch (_) {}
+    }
+
+    // Realistic arrow whizzing through the air when firing Wind Arrow
+    function playArrowWhizzSound() {
+      try {
+        const nowMs = performance.now();
+        if (nowMs - lastSoundTime.whizz < 75) return;
+        lastSoundTime.whizz = nowMs;
+
+        const ctxAudio = ensureAudioContext();
+        if (!ctxAudio) return;
+        const t = ctxAudio.currentTime;
+        const dur = 0.22;
+
+        const len = Math.floor(ctxAudio.sampleRate * dur);
+        const buf = ctxAudio.createBuffer(1, len, ctxAudio.sampleRate);
+        const ch = buf.getChannelData(0);
+        for (let i = 0; i < len; i++) {
+          const p = i / len;
+          const swell = Math.sin(Math.min(1, p * 1.35) * Math.PI);
+          ch[i] = (Math.random() * 2 - 1) * swell;
+        }
+
+        const noise = ctxAudio.createBufferSource();
+        noise.buffer = buf;
+
+        const whizzFilter = ctxAudio.createBiquadFilter();
+        whizzFilter.type = "bandpass";
+        whizzFilter.frequency.setValueAtTime(2900, t);
+        whizzFilter.frequency.exponentialRampToValueAtTime(1950, t + 0.08);
+        whizzFilter.frequency.exponentialRampToValueAtTime(820, t + dur);
+        whizzFilter.Q.setValueAtTime(5.5, t);
+
+        const whizzGain = ctxAudio.createGain();
+        whizzGain.gain.setValueAtTime(0.001, t);
+        whizzGain.gain.linearRampToValueAtTime(0.34, t + 0.03);
+        whizzGain.gain.exponentialRampToValueAtTime(0.001, t + dur);
+
+        noise.connect(whizzFilter);
+        whizzFilter.connect(whizzGain);
+        whizzGain.connect(masterOut);
+        noise.start(t);
+
+        const whistle = ctxAudio.createOscillator();
+        const whistleGain = ctxAudio.createGain();
+        whistle.type = "sine";
+        whistle.frequency.setValueAtTime(1750, t);
+        whistle.frequency.exponentialRampToValueAtTime(690, t + dur * 0.9);
+        whistleGain.gain.setValueAtTime(0.001, t);
+        whistleGain.gain.linearRampToValueAtTime(0.055, t + 0.025);
+        whistleGain.gain.exponentialRampToValueAtTime(0.001, t + dur * 0.92);
+        whistle.connect(whistleGain);
+        whistleGain.connect(masterOut);
+        whistle.start(t);
+        whistle.stop(t + dur);
+      } catch (_) {}
+    }
+
+    function playMarioJumpSound() {
+      try {
+        const nowMs = performance.now();
+        if (nowMs - lastSoundTime.jump < 60) return;
+        lastSoundTime.jump = nowMs;
+
+        const ctxAudio = ensureAudioContext();
+        if (!ctxAudio) return;
+        const t = ctxAudio.currentTime;
+        const osc = ctxAudio.createOscillator();
+        const g = ctxAudio.createGain();
+        osc.type = "square";
+        osc.frequency.setValueAtTime(195, t);
+        osc.frequency.exponentialRampToValueAtTime(590, t + 0.15);
+        g.gain.setValueAtTime(0.001, t);
+        g.gain.linearRampToValueAtTime(0.085, t + 0.015);
+        g.gain.exponentialRampToValueAtTime(0.001, t + 0.16);
+        osc.connect(g);
+        g.connect(masterOut);
+        osc.start(t);
+        osc.stop(t + 0.17);
+      } catch (_) {}
+    }
+
+    function playMarioSuperStarSound() {
+      try {
+        const nowMs = performance.now();
+        if (nowMs - lastSoundTime.star < 300) return;
+        lastSoundTime.star = nowMs;
+
+        const ctxAudio = ensureAudioContext();
+        if (!ctxAudio) return;
+        const notes = [
+          659.25, 659.25, 659.25, 0, 523.25, 659.25, 0, 783.99, 0, 392.0, 0,
+          523.25, 0, 392.0, 0, 329.63, 0, 440.0, 0, 493.88, 0, 466.16, 440.0
+        ];
+        const step = 0.075;
+        const base = ctxAudio.currentTime + 0.01;
+
+        for (let i = 0; i < notes.length; i++) {
+          const freq = notes[i];
+          if (!freq) continue;
+          const t = base + i * step;
+          const osc = ctxAudio.createOscillator();
+          const g = ctxAudio.createGain();
+          osc.type = "square";
+          osc.frequency.setValueAtTime(freq, t);
+          g.gain.setValueAtTime(0.001, t);
+          g.gain.linearRampToValueAtTime(0.08, t + 0.01);
+          g.gain.exponentialRampToValueAtTime(0.001, t + step * 0.9);
+          osc.connect(g);
+          g.connect(masterOut);
+          osc.start(t);
+          osc.stop(t + step);
+        }
+      } catch (_) {}
+    }
+
+    function playMarioPhaseSound() {
+      try {
+        const nowMs = performance.now();
+        if (nowMs - lastSoundTime.phase < 90) return;
+        lastSoundTime.phase = nowMs;
+
+        const ctxAudio = ensureAudioContext();
+        if (!ctxAudio) return;
+        const t = ctxAudio.currentTime;
+        const osc = ctxAudio.createOscillator();
+        const g = ctxAudio.createGain();
+        osc.type = "triangle";
+        osc.frequency.setValueAtTime(340, t);
+        osc.frequency.exponentialRampToValueAtTime(880, t + 0.08);
+        osc.frequency.exponentialRampToValueAtTime(420, t + 0.18);
+        g.gain.setValueAtTime(0.001, t);
+        g.gain.linearRampToValueAtTime(0.11, t + 0.015);
+        g.gain.exponentialRampToValueAtTime(0.001, t + 0.19);
+        osc.connect(g);
+        g.connect(masterOut);
+        osc.start(t);
+        osc.stop(t + 0.2);
+      } catch (_) {}
+    }
+
+    function playAppleSmashSound() {
+      try {
+        const nowMs = performance.now();
+        if (nowMs - lastSoundTime.smash < 70) return;
+        lastSoundTime.smash = nowMs;
+
+        const ctxAudio = ensureAudioContext();
+        if (!ctxAudio) return;
+        const t = ctxAudio.currentTime;
+
+        const thud = ctxAudio.createOscillator();
+        const thudGain = ctxAudio.createGain();
+        thud.type = "sine";
+        thud.frequency.setValueAtTime(160, t);
+        thud.frequency.exponentialRampToValueAtTime(48, t + 0.14);
+        thudGain.gain.setValueAtTime(0.24, t);
+        thudGain.gain.exponentialRampToValueAtTime(0.001, t + 0.15);
+        thud.connect(thudGain);
+        thudGain.connect(masterOut);
+        thud.start(t);
+        thud.stop(t + 0.16);
+
+        const len = Math.floor(ctxAudio.sampleRate * 0.14);
+        const buf = ctxAudio.createBuffer(1, len, ctxAudio.sampleRate);
+        const ch = buf.getChannelData(0);
+        for (let i = 0; i < len; i++) {
+          ch[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 1.8);
+        }
+        const noise = ctxAudio.createBufferSource();
+        noise.buffer = buf;
+
+        const filter = ctxAudio.createBiquadFilter();
+        filter.type = "bandpass";
+        filter.frequency.setValueAtTime(2400, t);
+        filter.Q.setValueAtTime(1.6, t);
+
+        const nGain = ctxAudio.createGain();
+        nGain.gain.setValueAtTime(0.3, t);
+        nGain.gain.exponentialRampToValueAtTime(0.001, t + 0.14);
+
+        noise.connect(filter);
+        filter.connect(nGain);
+        nGain.connect(masterOut);
+        noise.start(t);
+      } catch (_) {}
+    }
+
+    function playRobloxDeathSound() {
+      try {
+        const nowMs = performance.now();
+        if (nowMs - lastSoundTime.death < 300) return;
+        lastSoundTime.death = nowMs;
+
+        const ctxAudio = ensureAudioContext();
+        if (!ctxAudio) return;
+        const t = ctxAudio.currentTime;
+        const dur = 0.78;
+
+        const osc1 = ctxAudio.createOscillator();
+        const osc2 = ctxAudio.createOscillator();
+        const sub = ctxAudio.createOscillator();
+        const filter = ctxAudio.createBiquadFilter();
+        const g = ctxAudio.createGain();
+
+        osc1.type = "sawtooth";
+        osc2.type = "square";
+        sub.type = "triangle";
+
+        osc1.frequency.setValueAtTime(175, t);
+        osc1.frequency.exponentialRampToValueAtTime(230, t + 0.08);
+        osc1.frequency.exponentialRampToValueAtTime(82, t + dur);
+
+        osc2.frequency.setValueAtTime(350, t);
+        osc2.frequency.exponentialRampToValueAtTime(450, t + 0.08);
+        osc2.frequency.exponentialRampToValueAtTime(158, t + dur);
+
+        sub.frequency.setValueAtTime(98, t);
+        sub.frequency.exponentialRampToValueAtTime(50, t + dur);
+
+        filter.type = "bandpass";
+        filter.Q.setValueAtTime(2.0, t);
+        filter.frequency.setValueAtTime(600, t);
+        filter.frequency.exponentialRampToValueAtTime(235, t + dur);
+
+        g.gain.setValueAtTime(0.001, t);
+        g.gain.linearRampToValueAtTime(0.68, t + 0.025);
+        g.gain.setValueAtTime(0.62, t + 0.42);
+        g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+
+        osc1.connect(filter);
+        osc2.connect(filter);
+        sub.connect(filter);
+        filter.connect(g);
+        g.connect(masterOut);
+
+        osc1.start(t);
+        osc2.start(t);
+        sub.start(t);
+        osc1.stop(t + dur + 0.02);
+        osc2.stop(t + dur + 0.02);
+        sub.stop(t + dur + 0.02);
+      } catch (_) {}
+    }
+
+    function playFortniteDanceSong() {
+      try {
+        const nowMs = performance.now();
+        if (nowMs - lastSoundTime.dance < 500) return;
+        lastSoundTime.dance = nowMs;
+
+        const ctxAudio = ensureAudioContext();
+        if (!ctxAudio) return;
+
+        const tempoBpm = 128;
+        const stepSec = 60 / tempoBpm / 2;
+        const melodyNotes = [
+          659.25, 0, 783.99, 880.0, 987.77, 0, 880.0, 783.99,
+          659.25, 783.99, 880.0, 1046.5, 987.77, 880.0, 783.99, 659.25,
+          587.33, 0, 659.25, 783.99, 880.0, 0, 783.99, 659.25,
+          587.33, 659.25, 783.99, 880.0, 783.99, 659.25, 587.33, 0
+        ];
+        const bassNotes = [
+          164.81, 164.81, 196.0, 196.0, 220.0, 220.0, 196.0, 196.0,
+          164.81, 164.81, 220.0, 220.0, 246.94, 220.0, 196.0, 164.81,
+          146.83, 146.83, 196.0, 196.0, 220.0, 220.0, 196.0, 164.81,
+          146.83, 164.81, 196.0, 220.0, 196.0, 164.81, 146.83, 146.83
+        ];
+
+        const base = ctxAudio.currentTime + 0.02;
+        for (let i = 0; i < melodyNotes.length; i++) {
+          const start = base + i * stepSec;
+          const freq = melodyNotes[i];
+          if (freq > 0) {
+            const osc = ctxAudio.createOscillator();
+            const g = ctxAudio.createGain();
+            osc.type = "square";
+            osc.frequency.setValueAtTime(freq, start);
+            g.gain.setValueAtTime(0.001, start);
+            g.gain.exponentialRampToValueAtTime(0.06, start + 0.014);
+            g.gain.exponentialRampToValueAtTime(0.001, start + stepSec * 0.88);
+            osc.connect(g);
+            g.connect(masterOut);
+            osc.start(start);
+            osc.stop(start + stepSec);
+          }
+
+          const bFreq = bassNotes[i];
+          if (bFreq > 0) {
+            const bOsc = ctxAudio.createOscillator();
+            const bGain = ctxAudio.createGain();
+            bOsc.type = "triangle";
+            bOsc.frequency.setValueAtTime(bFreq, start);
+            bGain.gain.setValueAtTime(0.001, start);
+            bGain.gain.exponentialRampToValueAtTime(0.11, start + 0.012);
+            bGain.gain.exponentialRampToValueAtTime(0.001, start + stepSec * 0.86);
+            bOsc.connect(bGain);
+            bGain.connect(masterOut);
+            bOsc.start(start);
+            bOsc.stop(start + stepSec);
+          }
+        }
+      } catch (_) {}
+    }
+
+    // ---------------- GAME STATE ----------------
+    let gameState = "start";
     let score = 0;
     let bestScore = Number(localStorage.getItem("windArcherFlappyBest") || 0);
     let frames = 0;
+    let spawnTimerFrames = 0;
     let lastTime = performance.now();
     let screenShake = 0;
     let shootAnimTimer = 0;
+    let cutscene100Shown = false;
+    let cutscene120Shown = false;
+    let cutsceneButtons = { continueBtn: null, giveUpBtn: null, nextBtn: null };
 
-    // Cooldown & power-up state
+    let triggeredCheckpoints = new Set();
+    let checkpointBanner = {
+      active: false,
+      title: "",
+      subtitle: "",
+      remainingMs: 0,
+      durationMs: 3200
+    };
+    let checkpointFlags = [];
+
     let arrowCooldownRemaining = 0;
     let activePowerup = { type: null, remainingMs: 0 };
+    let rainbowMode = { active: false, remainingMs: 0 };
 
-    // Wind Archer Cookie + held companion bird
     const archer = {
       x: 112,
       y: PLAY_HEIGHT * 0.46,
@@ -201,7 +844,6 @@
     let particles = [];
     let windRibbons = [];
 
-    // Rich multi-layer forest background data
     const farTrees = Array.from({ length: 14 }, (_, i) => ({
       x: i * 50 + ((i * 23) % 18),
       trunkW: 14 + (i % 3) * 5,
@@ -213,8 +855,7 @@
       x: i * 62 + ((i * 31) % 22),
       trunkW: 20 + (i % 3) * 6,
       canopyR: 58 + ((i * 27) % 34),
-      yOffset: 55 + ((i * 37) % 65),
-      hasHangingVine: i % 2 === 0
+      yOffset: 55 + ((i * 37) % 65)
     }));
 
     const nearTrees = Array.from({ length: 8 }, (_, i) => ({
@@ -229,6 +870,13 @@
       phase: i * 0.65
     }));
 
+    const meadowFlowers = Array.from({ length: 24 }, (_, i) => ({
+      x: (i * 47) % WIDTH,
+      y: 70 + ((i * 59) % (PLAY_HEIGHT - 95)),
+      petalColor: i % 4 === 0 ? "#f472b6" : i % 4 === 1 ? "#facc15" : i % 4 === 2 ? "#c084fc" : "#fb7185",
+      phase: i * 0.7
+    }));
+
     const ambientLeaves = Array.from({ length: 26 }, (_, i) => ({
       x: (i * 53) % WIDTH,
       y: (i * 71) % PLAY_HEIGHT,
@@ -239,16 +887,81 @@
       color: i % 3 === 0 ? "#4ade80" : i % 3 === 1 ? "#86efac" : "#bbf7d0"
     }));
 
+    function getCurrentBiome() {
+      const level = score;
+      if (level >= 100) return "volcano";
+      if (level >= 90) return "forest";
+      if (level >= 60) return "meadow";
+      if (level >= 30) return "grassland";
+      return "forest";
+    }
+
+    function getBiomeLabel(biome) {
+      if (biome === "grassland") return "GRASSLAND";
+      if (biome === "meadow") return "FLOWER MEADOW";
+      if (biome === "volcano") return "VOLCANO";
+      return "FOREST";
+    }
+
+    function hasStrengthEffect() {
+      return rainbowMode.active || activePowerup.type === "strength";
+    }
+
+    function hasSpeedEffect() {
+      return rainbowMode.active || activePowerup.type === "speed";
+    }
+
+    function hasNoClipEffect() {
+      return rainbowMode.active || activePowerup.type === "noclip";
+    }
+
+    function hasJumpEffect() {
+      return rainbowMode.active || activePowerup.type === "jump";
+    }
+
     function getCurrentFlapImpulse() {
-      return activePowerup.type === "jump" ? BOOST_JUMP_IMPULSE : FLAP_IMPULSE;
+      return hasJumpEffect() ? BOOST_JUMP_IMPULSE : FLAP_IMPULSE;
     }
 
     function getCurrentSpeedMultiplier() {
-      return activePowerup.type === "speed" ? SUPER_SPEED_MULTIPLIER : 1.0;
+      return hasSpeedEffect() ? SUPER_SPEED_MULTIPLIER : 1.0;
     }
 
     function getCurrentObstacleSpeed() {
       return BASE_OBSTACLE_SPEED * getCurrentSpeedMultiplier();
+    }
+
+    function getRainbowColor(offset = 0) {
+      const hue = (((frames * 6 + offset) % 360) + 360) % 360;
+      return `hsl(${hue}, 95%, 58%)`;
+    }
+
+    function pickWeightedPowerupType() {
+      const total = POWERUP_WEIGHTS.reduce((sum, item) => sum + item.weight, 0);
+      let roll = Math.random() * total;
+      for (const item of POWERUP_WEIGHTS) {
+        roll -= item.weight;
+        if (roll <= 0) return item.type;
+      }
+      return "strength";
+    }
+
+    function triggerCheckpointReached(milestone) {
+      triggeredCheckpoints.add(milestone.level);
+      checkpointBanner = {
+        active: true,
+        title: milestone.name,
+        subtitle: "♪ DANCE SONG PLAYING ♪",
+        remainingMs: 3200,
+        durationMs: 3200
+      };
+      checkpointFlags.push({
+        x: WIDTH + 12,
+        level: milestone.level,
+        label: `CHK ${milestone.level}`
+      });
+      spawnWindBurst(archer.x, archer.y, 24, "#facc15");
+      playFortniteDanceSong();
     }
 
     function resetRun() {
@@ -265,13 +978,29 @@
       arrows = [];
       particles = [];
       windRibbons = [];
+      checkpointFlags = [];
 
       score = 0;
       frames = 0;
+      spawnTimerFrames = SPAWN_INTERVAL_FRAMES * 0.65;
       screenShake = 0;
       shootAnimTimer = 0;
+      cutscene100Shown = false;
+      cutscene120Shown = false;
+      cutsceneButtons = { continueBtn: null, giveUpBtn: null, nextBtn: null };
+
+      triggeredCheckpoints = new Set();
+      checkpointBanner = {
+        active: false,
+        title: "",
+        subtitle: "",
+        remainingMs: 0,
+        durationMs: 3200
+      };
+
       arrowCooldownRemaining = 0;
       activePowerup = { type: null, remainingMs: 0 };
+      rainbowMode = { active: false, remainingMs: 0 };
 
       for (let i = 0; i < 4; i++) {
         windRibbons.push({
@@ -285,32 +1014,42 @@
     }
 
     function flap() {
+      ensureAudioContext();
+
+      if (gameState === "cutscene_100" || gameState === "cutscene_120") {
+        return;
+      }
       if (gameState === "start") {
         resetRun();
         gameState = "playing";
         archer.vy = getCurrentFlapImpulse();
         archer.birdFlapBoost = 1.0;
+        playMarioJumpSound();
         spawnWindBurst(archer.x - 10, archer.y + 8, 8, "#86efac");
       } else if (gameState === "playing") {
         archer.vy = getCurrentFlapImpulse();
         archer.birdFlapBoost = 1.0;
-        const burstColor = activePowerup.type === "jump" ? "#38bdf8" : "#bbf7d0";
+        playMarioJumpSound();
+        const burstColor = rainbowMode.active ? getRainbowColor(40) : hasJumpEffect() ? "#38bdf8" : "#bbf7d0";
         spawnWindBurst(archer.x - 12, archer.y + 8, 7, burstColor);
       } else if (gameState === "gameover") {
         resetRun();
         gameState = "playing";
         archer.vy = getCurrentFlapImpulse();
         archer.birdFlapBoost = 1.0;
+        playMarioJumpSound();
       }
     }
 
     function shootWindArrow() {
+      ensureAudioContext();
       if (gameState !== "playing") return;
       if (arrowCooldownRemaining > 0) return;
 
       arrowCooldownRemaining = ARROW_COOLDOWN_MS;
       shootAnimTimer = 14;
       screenShake = Math.max(screenShake, 4.5);
+      playArrowWhizzSound();
 
       const bowTipX = archer.x + 27;
       const bowTipY = archer.y - 1;
@@ -347,9 +1086,11 @@
       }
     }
 
-    function spawnObstacleDebris(x, y, w, h) {
-      const palette = ["#4ade80", "#16a34a", "#15803d", "#a3e635", "#bbf7d0"];
-      const count = 22;
+    function spawnObstacleDebris(x, y, w, h, isLava = false) {
+      const palette = isLava
+        ? ["#ef4444", "#f97316", "#facc15", "#7f1d1d", "#fde047"]
+        : ["#4ade80", "#16a34a", "#15803d", "#a3e635", "#bbf7d0"];
+      const count = 20;
       for (let i = 0; i < count; i++) {
         const px = x + Math.random() * w;
         const py = y + Math.random() * h;
@@ -372,29 +1113,39 @@
       }
     }
 
+    function pickGapSize() {
+      const keys = ["small", "normal", "big"];
+      const pick = keys[Math.floor(Math.random() * keys.length)];
+      return GAP_SIZES[pick];
+    }
+
     let nextObstacleId = 1;
     function spawnObstaclePair() {
-      const minTop = 54;
-      const maxTop = PLAY_HEIGHT - OBSTACLE_GAP - 54;
+      const gap = pickGapSize();
+      const minTop = 44;
+      const maxTop = Math.max(minTop + 10, PLAY_HEIGHT - gap - 44);
       const topHeight = Math.floor(Math.random() * (maxTop - minTop + 1)) + minTop;
-      const bottomY = topHeight + OBSTACLE_GAP;
+      const bottomY = topHeight + gap;
 
       obstacles.push({
         id: nextObstacleId++,
         x: WIDTH + 10,
         topHeight,
         bottomY,
+        gap,
         topDestroyed: false,
         bottomDestroyed: false,
+        topPhased: false,
+        bottomPhased: false,
         passed: false,
         swayPhase: Math.random() * Math.PI * 2
       });
 
       if (nextObstacleId % 2 === 1) {
-        const type = POWERUP_TYPES[Math.floor(Math.random() * POWERUP_TYPES.length)];
+        const type = pickWeightedPowerupType();
         powerupOrbs.push({
           x: WIDTH + 10 + OBSTACLE_WIDTH * 0.5,
-          y: topHeight + OBSTACLE_GAP * 0.5,
+          y: topHeight + gap * 0.5,
           radius: 15,
           type,
           bobPhase: Math.random() * Math.PI * 2
@@ -427,8 +1178,54 @@
       if (gameState === "gameover") return;
       gameState = "gameover";
       activePowerup = { type: null, remainingMs: 0 };
-      screenShake = 8;
-      spawnWindBurst(archer.x, archer.y, 18, "#86efac");
+      rainbowMode = { active: false, remainingMs: 0 };
+      screenShake = 11;
+      spawnWindBurst(archer.x, archer.y, 22, "#86efac");
+      playRobloxDeathSound();
+    }
+
+    function chooseContinueVolcano() {
+      if (gameState !== "cutscene_100") return;
+      gameState = "playing";
+      obstacles = [];
+      powerupOrbs = [];
+      archer.y = PLAY_HEIGHT * 0.45;
+      archer.vy = -4.2;
+      spawnWindBurst(archer.x, archer.y, 18, "#f97316");
+    }
+
+    function chooseGiveUp() {
+      if (gameState !== "cutscene_100") return;
+      triggerGameOver();
+    }
+
+    function continueAfterFireSpirit() {
+      if (gameState !== "cutscene_120") return;
+      gameState = "playing";
+      archer.y = PLAY_HEIGHT * 0.45;
+      archer.vy = -4.2;
+      spawnWindBurst(archer.x, archer.y, 20, "#facc15");
+    }
+
+    function activatePowerupOrb(type) {
+      if (type === "rainbow") {
+        rainbowMode = { active: true, remainingMs: RAINBOW_DURATION_MS };
+        screenShake = Math.max(screenShake, 7);
+        spawnWindBurst(archer.x, archer.y, 28, "#f472b6");
+        playMarioSuperStarSound();
+        return;
+      }
+
+      if (type === "speed") {
+        playSonicSpeedSound();
+      } else if (type === "jump") {
+        playMarioWahHoooSound();
+      }
+
+      activePowerup = { type, remainingMs: POWERUP_DURATION_MS };
+      const meta = POWERUP_META[type];
+      screenShake = Math.max(screenShake, type === "speed" || type === "jump" ? 6.5 : 4);
+      spawnWindBurst(archer.x, archer.y, 16, meta.color);
     }
 
     function updateHudButton() {
@@ -449,7 +1246,25 @@
     }
 
     function update(dtMs) {
-      const dtScale = Math.min(2.0, dtMs / (1000 / 60));
+      const safeDtMs = Math.min(50, Math.max(0, dtMs));
+      const dtScale = safeDtMs / (1000 / 60);
+
+      updateForestAmbience(safeDtMs);
+
+      if (checkpointBanner.active) {
+        checkpointBanner.remainingMs = Math.max(0, checkpointBanner.remainingMs - safeDtMs);
+        if (checkpointBanner.remainingMs <= 0) {
+          checkpointBanner.active = false;
+        }
+      }
+
+      if (gameState === "cutscene_100" || gameState === "cutscene_120") {
+        frames += dtScale * 0.65;
+        archer.scarfPhase += 0.2 * dtScale;
+        archer.birdWingPhase += 0.25 * dtScale;
+        updateHudButton();
+        return;
+      }
 
       const baseEnvMult = gameState === "playing" ? 1.0 : 0.45;
       const speedMult = gameState === "playing" ? baseEnvMult * getCurrentSpeedMultiplier() : baseEnvMult;
@@ -515,11 +1330,18 @@
       frames += dtScale;
 
       if (arrowCooldownRemaining > 0) {
-        arrowCooldownRemaining = Math.max(0, arrowCooldownRemaining - dtMs);
+        arrowCooldownRemaining = Math.max(0, arrowCooldownRemaining - safeDtMs);
+      }
+
+      if (rainbowMode.active) {
+        rainbowMode.remainingMs = Math.max(0, rainbowMode.remainingMs - safeDtMs);
+        if (rainbowMode.remainingMs <= 0) {
+          rainbowMode = { active: false, remainingMs: 0 };
+        }
       }
 
       if (activePowerup.type) {
-        activePowerup.remainingMs = Math.max(0, activePowerup.remainingMs - dtMs);
+        activePowerup.remainingMs = Math.max(0, activePowerup.remainingMs - safeDtMs);
         if (activePowerup.remainingMs <= 0) {
           activePowerup = { type: null, remainingMs: 0 };
         }
@@ -527,10 +1349,10 @@
 
       updateHudButton();
 
-      archer.vy = Math.min(MAX_FALL_SPEED + (activePowerup.type === "jump" ? 1.5 : 0), archer.vy + GRAVITY * dtScale);
+      archer.vy = Math.min(MAX_FALL_SPEED + (hasJumpEffect() ? 1.5 : 0), archer.vy + GRAVITY * dtScale);
       archer.y += archer.vy * dtScale;
       archer.tilt = Math.max(-0.45, Math.min(Math.PI * 0.44, archer.vy * 0.068));
-      archer.scarfPhase += (activePowerup.type === "speed" ? 0.38 : 0.24) * dtScale;
+      archer.scarfPhase += (hasSpeedEffect() ? 0.38 : 0.24) * dtScale;
 
       if (archer.birdFlapBoost > 0) {
         archer.birdFlapBoost = Math.max(0, archer.birdFlapBoost - 0.05 * dtScale);
@@ -550,11 +1372,21 @@
         return;
       }
 
-      if (Math.floor(frames) % SPAWN_INTERVAL_FRAMES === 0 && frames - Math.floor(frames) < dtScale) {
+      spawnTimerFrames += dtScale * getCurrentSpeedMultiplier();
+      if (spawnTimerFrames >= SPAWN_INTERVAL_FRAMES) {
+        spawnTimerFrames -= SPAWN_INTERVAL_FRAMES;
         spawnObstaclePair();
       }
 
       const obstacleSpeed = getCurrentObstacleSpeed();
+      const isVolcano = getCurrentBiome() === "volcano";
+
+      for (let i = checkpointFlags.length - 1; i >= 0; i--) {
+        checkpointFlags[i].x -= obstacleSpeed * dtScale;
+        if (checkpointFlags[i].x < -60) {
+          checkpointFlags.splice(i, 1);
+        }
+      }
 
       for (let i = powerupOrbs.length - 1; i >= 0; i--) {
         const orb = powerupOrbs[i];
@@ -565,10 +1397,7 @@
         const dx = archer.x - orb.x;
         const dy = archer.y - bobY;
         if (dx * dx + dy * dy <= (archer.radius + orb.radius) ** 2) {
-          activePowerup = { type: orb.type, remainingMs: POWERUP_DURATION_MS };
-          const meta = POWERUP_META[orb.type];
-          screenShake = Math.max(screenShake, 4);
-          spawnWindBurst(orb.x, bobY, 16, meta.color);
+          activatePowerupOrb(orb.type);
           powerupOrbs.splice(i, 1);
           continue;
         }
@@ -616,8 +1445,9 @@
             ar.hitIds.add(topKey);
             ar.destroysLeft--;
             screenShake = Math.max(screenShake, 5.5);
-            spawnObstacleDebris(obs.x, 0, OBSTACLE_WIDTH, obs.topHeight);
-            spawnWindBurst(obs.x + OBSTACLE_WIDTH / 2, obs.topHeight, 12, "#4ade80");
+            playAppleSmashSound();
+            spawnObstacleDebris(obs.x, 0, OBSTACLE_WIDTH, obs.topHeight, isVolcano);
+            spawnWindBurst(obs.x + OBSTACLE_WIDTH / 2, obs.topHeight, 12, isVolcano ? "#fb923c" : "#4ade80");
             if (ar.destroysLeft <= 0) break;
           }
 
@@ -633,8 +1463,9 @@
             ar.hitIds.add(botKey);
             ar.destroysLeft--;
             screenShake = Math.max(screenShake, 5.5);
-            spawnObstacleDebris(obs.x, obs.bottomY, OBSTACLE_WIDTH, botHeight);
-            spawnWindBurst(obs.x + OBSTACLE_WIDTH / 2, obs.bottomY, 12, "#4ade80");
+            playAppleSmashSound();
+            spawnObstacleDebris(obs.x, obs.bottomY, OBSTACLE_WIDTH, botHeight, isVolcano);
+            spawnWindBurst(obs.x + OBSTACLE_WIDTH / 2, obs.bottomY, 12, isVolcano ? "#fb923c" : "#4ade80");
             if (ar.destroysLeft <= 0) break;
           }
         }
@@ -644,8 +1475,8 @@
         }
       }
 
-      const hasSuperStrength = activePowerup.type === "strength";
-      const hasNoClip = activePowerup.type === "noclip";
+      const canSmash = hasStrengthEffect();
+      const canPassGhost = hasNoClipEffect();
 
       for (let i = obstacles.length - 1; i >= 0; i--) {
         const obs = obstacles[i];
@@ -654,19 +1485,31 @@
 
         const botHeight = PLAY_HEIGHT - obs.bottomY;
 
-        if (!hasNoClip) {
-          const hitTop =
-            !obs.topDestroyed &&
-            circleIntersectsRect(archer.x, archer.y, archer.radius - 2, obs.x, 0, OBSTACLE_WIDTH, obs.topHeight);
-          const hitBottom =
-            !obs.bottomDestroyed &&
-            circleIntersectsRect(archer.x, archer.y, archer.radius - 2, obs.x, obs.bottomY, OBSTACLE_WIDTH, botHeight);
+        const touchingTop =
+          !obs.topDestroyed &&
+          circleIntersectsRect(archer.x, archer.y, archer.radius - 2, obs.x, 0, OBSTACLE_WIDTH, obs.topHeight);
+        const touchingBottom =
+          !obs.bottomDestroyed &&
+          circleIntersectsRect(archer.x, archer.y, archer.radius - 2, obs.x, obs.bottomY, OBSTACLE_WIDTH, botHeight);
 
-          if (hitTop) {
-            if (hasSuperStrength) {
+        if (canPassGhost) {
+          if (touchingTop && !obs.topPhased) {
+            obs.topPhased = true;
+            playMarioPhaseSound();
+            spawnWindBurst(archer.x, archer.y, 10, "#c084fc");
+          }
+          if (touchingBottom && !obs.bottomPhased) {
+            obs.bottomPhased = true;
+            playMarioPhaseSound();
+            spawnWindBurst(archer.x, archer.y, 10, "#c084fc");
+          }
+        } else {
+          if (touchingTop) {
+            if (canSmash) {
               obs.topDestroyed = true;
               screenShake = Math.max(screenShake, 6.5);
-              spawnObstacleDebris(obs.x, 0, OBSTACLE_WIDTH, obs.topHeight);
+              playAppleSmashSound();
+              spawnObstacleDebris(obs.x, 0, OBSTACLE_WIDTH, obs.topHeight, isVolcano);
               spawnWindBurst(obs.x + OBSTACLE_WIDTH / 2, Math.min(archer.y, obs.topHeight), 14, "#ef4444");
             } else {
               triggerGameOver();
@@ -674,11 +1517,12 @@
             }
           }
 
-          if (hitBottom) {
-            if (hasSuperStrength) {
+          if (touchingBottom) {
+            if (canSmash) {
               obs.bottomDestroyed = true;
               screenShake = Math.max(screenShake, 6.5);
-              spawnObstacleDebris(obs.x, obs.bottomY, OBSTACLE_WIDTH, botHeight);
+              playAppleSmashSound();
+              spawnObstacleDebris(obs.x, obs.bottomY, OBSTACLE_WIDTH, botHeight, isVolcano);
               spawnWindBurst(obs.x + OBSTACLE_WIDTH / 2, Math.max(archer.y, obs.bottomY), 14, "#ef4444");
             } else {
               triggerGameOver();
@@ -692,7 +1536,27 @@
           score++;
           if (score > bestScore) {
             bestScore = score;
-            localStorage.setItem("windArcherFlappyBest", String(bestScore));
+            try {
+              localStorage.setItem("windArcherFlappyBest", String(bestScore));
+            } catch (_) {}
+          }
+
+          for (const milestone of CHECKPOINT_MILESTONES) {
+            if (score >= milestone.level && !triggeredCheckpoints.has(milestone.level)) {
+              triggerCheckpointReached(milestone);
+            }
+          }
+
+          if (score >= 100 && !cutscene100Shown) {
+            cutscene100Shown = true;
+            gameState = "cutscene_100";
+            return;
+          }
+
+          if (score >= 120 && !cutscene120Shown) {
+            cutscene120Shown = true;
+            gameState = "cutscene_120";
+            return;
           }
         }
 
@@ -703,12 +1567,17 @@
     }
 
     // ---------------- RENDERING ----------------
-
-    function drawBackground() {
+    function drawForestBackground(envMult, isDeepForest) {
       const skyGrad = ctx.createLinearGradient(0, 0, 0, PLAY_HEIGHT);
-      skyGrad.addColorStop(0, "#071d1a");
-      skyGrad.addColorStop(0.45, "#0f3b32");
-      skyGrad.addColorStop(1, "#185343");
+      if (isDeepForest) {
+        skyGrad.addColorStop(0, "#051916");
+        skyGrad.addColorStop(0.45, "#0b3129");
+        skyGrad.addColorStop(1, "#134739");
+      } else {
+        skyGrad.addColorStop(0, "#071d1a");
+        skyGrad.addColorStop(0.45, "#0f3b32");
+        skyGrad.addColorStop(1, "#185343");
+      }
       ctx.fillStyle = skyGrad;
       ctx.fillRect(0, 0, WIDTH, PLAY_HEIGHT);
 
@@ -739,17 +1608,14 @@
       ctx.closePath();
       ctx.fill();
 
-      const envMult = gameState === "playing" ? getCurrentSpeedMultiplier() : 0.45;
       const farScroll = gameState === "playing" ? frames * 0.35 * envMult : frames * 0.12;
       const farSpan = 700;
       for (const t of farTrees) {
         const sx = (((t.x - farScroll) % farSpan) + farSpan) % farSpan - 80;
         if (sx < -90 || sx > WIDTH + 90) continue;
-
         const crownY = PLAY_HEIGHT - t.yOffset - 80;
         ctx.fillStyle = "#08221d";
         ctx.fillRect(sx - t.trunkW / 2, crownY, t.trunkW, PLAY_HEIGHT - crownY);
-
         ctx.fillStyle = "#0c352c";
         ctx.beginPath();
         ctx.arc(sx, crownY, t.canopyR, 0, Math.PI * 2);
@@ -763,57 +1629,15 @@
       for (const t of midTrees) {
         const sx = (((t.x - midScroll) % midSpan) + midSpan) % midSpan - 90;
         if (sx < -100 || sx > WIDTH + 100) continue;
-
         const crownY = PLAY_HEIGHT - t.yOffset - 105;
         ctx.fillStyle = "#132920";
         ctx.fillRect(sx - t.trunkW / 2, crownY, t.trunkW, PLAY_HEIGHT - crownY);
-
-        ctx.fillStyle = "#1e3c2f";
-        ctx.fillRect(sx - t.trunkW * 0.25, crownY + 8, t.trunkW * 0.22, PLAY_HEIGHT - crownY - 8);
-
         ctx.fillStyle = "#0f4234";
         ctx.beginPath();
         ctx.arc(sx, crownY, t.canopyR, 0, Math.PI * 2);
         ctx.arc(sx - t.canopyR * 0.6, crownY + 14, t.canopyR * 0.76, 0, Math.PI * 2);
         ctx.arc(sx + t.canopyR * 0.6, crownY + 12, t.canopyR * 0.78, 0, Math.PI * 2);
         ctx.fill();
-
-        if (t.hasHangingVine) {
-          const sway = Math.sin(frames * 0.04 + t.x * 0.05) * 5;
-          ctx.strokeStyle = "#15803d";
-          ctx.lineWidth = 2.2;
-          ctx.beginPath();
-          ctx.moveTo(sx + 18, crownY + 24);
-          ctx.quadraticCurveTo(sx + 22 + sway, crownY + 80, sx + 16 + sway * 1.3, crownY + 135);
-          ctx.stroke();
-        }
-      }
-
-      for (const rib of windRibbons) {
-        ctx.save();
-        ctx.strokeStyle = `rgba(187, 247, 208, ${rib.alpha})`;
-        ctx.lineWidth = 2;
-        ctx.lineCap = "round";
-        ctx.beginPath();
-        ctx.moveTo(rib.x, rib.y);
-        ctx.quadraticCurveTo(rib.x + rib.len * 0.5, rib.y - 6, rib.x + rib.len, rib.y + 2);
-        ctx.stroke();
-        ctx.restore();
-      }
-
-      if (gameState === "playing" && activePowerup.type === "speed") {
-        ctx.save();
-        ctx.strokeStyle = "rgba(253, 230, 138, 0.35)";
-        ctx.lineWidth = 2;
-        for (let s = 0; s < 7; s++) {
-          const sy = 55 + ((s * 68 + frames * 7) % (PLAY_HEIGHT - 80));
-          const sx = WIDTH - ((frames * 16 + s * 92) % (WIDTH + 120));
-          ctx.beginPath();
-          ctx.moveTo(sx, sy);
-          ctx.lineTo(sx + 44, sy);
-          ctx.stroke();
-        }
-        ctx.restore();
       }
 
       const nearScroll = gameState === "playing" ? frames * 1.15 * envMult : frames * 0.35;
@@ -821,12 +1645,8 @@
       for (const t of nearTrees) {
         const sx = (((t.x - nearScroll) % nearSpan) + nearSpan) % nearSpan - 110;
         if (sx < -120 || sx > WIDTH + 120) continue;
-
         ctx.fillStyle = "#091712";
         ctx.fillRect(sx - t.trunkW / 2, 0, t.trunkW, PLAY_HEIGHT);
-
-        ctx.fillStyle = "#12261e";
-        ctx.fillRect(sx - t.trunkW * 0.32, 0, t.trunkW * 0.2, PLAY_HEIGHT);
       }
 
       const topScroll = gameState === "playing" ? frames * 0.9 * envMult : frames * 0.3;
@@ -840,19 +1660,6 @@
         ctx.moveTo(sx, 0);
         ctx.quadraticCurveTo(sx + sway * 0.6, st.length * 0.5, sx + sway, st.length);
         ctx.stroke();
-
-        ctx.fillStyle = "#22c55e";
-        ctx.beginPath();
-        ctx.ellipse(sx + sway, st.length, 4.5, 2.2, sway * 0.08, 0, Math.PI * 2);
-        ctx.fill();
-      }
-
-      ctx.fillStyle = "#082921";
-      for (let cx = -30; cx <= WIDTH + 30; cx += 44) {
-        const scrollX = (((cx - topScroll) % (WIDTH + 60)) + (WIDTH + 60)) % (WIDTH + 60) - 30;
-        ctx.beginPath();
-        ctx.arc(scrollX, 4, 34, 0, Math.PI);
-        ctx.fill();
       }
 
       for (const leaf of ambientLeaves) {
@@ -867,19 +1674,253 @@
       }
     }
 
+    function drawGrasslandBackground(envMult) {
+      const skyGrad = ctx.createLinearGradient(0, 0, 0, PLAY_HEIGHT);
+      skyGrad.addColorStop(0, "#1d4ed8");
+      skyGrad.addColorStop(0.55, "#38bdf8");
+      skyGrad.addColorStop(1, "#bbf7d0");
+      ctx.fillStyle = skyGrad;
+      ctx.fillRect(0, 0, WIDTH, PLAY_HEIGHT);
+
+      ctx.fillStyle = "#fef08a";
+      ctx.beginPath();
+      ctx.arc(WIDTH - 78, 76, 30, 0, Math.PI * 2);
+      ctx.fill();
+
+      const cloudScroll = gameState === "playing" ? frames * 0.3 * envMult : frames * 0.1;
+      for (let c = 0; c < 4; c++) {
+        const cx = ((((c * 140 - cloudScroll) % (WIDTH + 140)) + (WIDTH + 140)) % (WIDTH + 140)) - 60;
+        const cy = 62 + (c % 2) * 34;
+        ctx.fillStyle = "rgba(255, 255, 255, 0.78)";
+        ctx.beginPath();
+        ctx.arc(cx, cy, 20, 0, Math.PI * 2);
+        ctx.arc(cx + 18, cy - 5, 24, 0, Math.PI * 2);
+        ctx.arc(cx + 38, cy + 2, 18, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      const hillScroll = gameState === "playing" ? frames * 0.55 * envMult : frames * 0.18;
+      ctx.fillStyle = "#4ade80";
+      ctx.beginPath();
+      ctx.moveTo(0, PLAY_HEIGHT);
+      for (let x = 0; x <= WIDTH + 20; x += 20) {
+        const hy = PLAY_HEIGHT - 125 - Math.sin((x + hillScroll) * 0.014) * 36;
+        ctx.lineTo(x, hy);
+      }
+      ctx.lineTo(WIDTH, PLAY_HEIGHT);
+      ctx.closePath();
+      ctx.fill();
+
+      ctx.fillStyle = "#22c55e";
+      ctx.beginPath();
+      ctx.moveTo(0, PLAY_HEIGHT);
+      for (let x = 0; x <= WIDTH + 20; x += 20) {
+        const hy = PLAY_HEIGHT - 68 - Math.cos((x + hillScroll * 1.4) * 0.02) * 24;
+        ctx.lineTo(x, hy);
+      }
+      ctx.lineTo(WIDTH, PLAY_HEIGHT);
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    function drawMeadowBackground(envMult) {
+      drawGrasslandBackground(envMult);
+
+      const flowerScroll = gameState === "playing" ? frames * 1.15 * envMult : frames * 0.35;
+      for (const fl of meadowFlowers) {
+        const sx = ((((fl.x - flowerScroll) % (WIDTH + 40)) + (WIDTH + 40)) % (WIDTH + 40)) - 20;
+        const sway = Math.sin(frames * 0.06 + fl.phase) * 3;
+        ctx.strokeStyle = "#15803d";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(sx, fl.y + 10);
+        ctx.quadraticCurveTo(sx + sway * 0.5, fl.y + 4, sx + sway, fl.y);
+        ctx.stroke();
+
+        ctx.fillStyle = fl.petalColor;
+        for (let p = 0; p < 5; p++) {
+          const ang = (p * Math.PI * 2) / 5;
+          ctx.beginPath();
+          ctx.arc(sx + sway + Math.cos(ang) * 4.2, fl.y + Math.sin(ang) * 4.2, 3.2, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        ctx.fillStyle = "#fef08a";
+        ctx.beginPath();
+        ctx.arc(sx + sway, fl.y, 2.5, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    function drawVolcanoBackground(envMult) {
+      const skyGrad = ctx.createLinearGradient(0, 0, 0, PLAY_HEIGHT);
+      skyGrad.addColorStop(0, "#1c0707");
+      skyGrad.addColorStop(0.5, "#450a0a");
+      skyGrad.addColorStop(1, "#7c2d12");
+      ctx.fillStyle = skyGrad;
+      ctx.fillRect(0, 0, WIDTH, PLAY_HEIGHT);
+
+      const magScroll = gameState === "playing" ? frames * 0.65 * envMult : frames * 0.2;
+      ctx.fillStyle = "#290b0b";
+      ctx.beginPath();
+      ctx.moveTo(0, PLAY_HEIGHT);
+      for (let x = 0; x <= WIDTH + 20; x += 20) {
+        const ry = PLAY_HEIGHT - 140 - Math.abs(Math.sin((x + magScroll) * 0.018)) * 55;
+        ctx.lineTo(x, ry);
+      }
+      ctx.lineTo(WIDTH, PLAY_HEIGHT);
+      ctx.closePath();
+      ctx.fill();
+
+      for (let e = 0; e < 24; e++) {
+        const ex = ((((e * 37 - magScroll * 1.2) % WIDTH) + WIDTH) % WIDTH);
+        const ey = PLAY_HEIGHT - ((((e * 49 + frames * (1.2 + (e % 3) * 0.5)) % PLAY_HEIGHT) + PLAY_HEIGHT) % PLAY_HEIGHT);
+        ctx.fillStyle = e % 2 === 0 ? "#fb923c" : "#fde047";
+        ctx.beginPath();
+        ctx.arc(ex, ey, 2 + (e % 3), 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    function drawBackground() {
+      const envMult = gameState === "playing" ? getCurrentSpeedMultiplier() : 0.45;
+      const biome = getCurrentBiome();
+
+      if (biome === "grassland") {
+        drawGrasslandBackground(envMult);
+      } else if (biome === "meadow") {
+        drawMeadowBackground(envMult);
+      } else if (biome === "volcano") {
+        drawVolcanoBackground(envMult);
+      } else {
+        drawForestBackground(envMult, score >= 90);
+      }
+
+      for (const rib of windRibbons) {
+        ctx.save();
+        ctx.strokeStyle = biome === "volcano" ? `rgba(253, 186, 116, ${rib.alpha})` : `rgba(187, 247, 208, ${rib.alpha})`;
+        ctx.lineWidth = 2;
+        ctx.lineCap = "round";
+        ctx.beginPath();
+        ctx.moveTo(rib.x, rib.y);
+        ctx.quadraticCurveTo(rib.x + rib.len * 0.5, rib.y - 6, rib.x + rib.len, rib.y + 2);
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      if (gameState === "playing" && hasSpeedEffect()) {
+        ctx.save();
+        ctx.strokeStyle = rainbowMode.active ? getRainbowColor(80) : "rgba(253, 230, 138, 0.35)";
+        ctx.lineWidth = 2;
+        for (let s = 0; s < 7; s++) {
+          const sy = 55 + ((s * 68 + frames * 7) % (PLAY_HEIGHT - 80));
+          const sx = WIDTH - ((frames * 16 + s * 92) % (WIDTH + 120));
+          ctx.beginPath();
+          ctx.moveTo(sx, sy);
+          ctx.lineTo(sx + 44, sy);
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+    }
+
+    function drawCheckpointFlags() {
+      for (const flag of checkpointFlags) {
+        ctx.save();
+        ctx.translate(flag.x, PLAY_HEIGHT);
+
+        const beamGrad = ctx.createLinearGradient(0, 0, 0, -PLAY_HEIGHT);
+        beamGrad.addColorStop(0, "rgba(250, 204, 21, 0.35)");
+        beamGrad.addColorStop(1, "rgba(250, 204, 21, 0)");
+        ctx.fillStyle = beamGrad;
+        ctx.fillRect(-10, -PLAY_HEIGHT, 20, PLAY_HEIGHT);
+
+        ctx.strokeStyle = "#fef08a";
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(0, 0);
+        ctx.lineTo(0, -64);
+        ctx.stroke();
+
+        const wave = Math.sin(frames * 0.25) * 3;
+        ctx.fillStyle = "#f97316";
+        ctx.strokeStyle = "#ffffff";
+        ctx.lineWidth = 1.4;
+        ctx.beginPath();
+        ctx.moveTo(0, -64);
+        ctx.lineTo(26, -55 + wave);
+        ctx.lineTo(0, -46);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.fillStyle = "#fef08a";
+        ctx.font = "bold 10px 'Trebuchet MS', sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillText(flag.label, 0, -72);
+
+        ctx.restore();
+      }
+    }
+
+    function drawLavaObstacle(x, y, w, h, isTop, swayPhase) {
+      if (h <= 0) return;
+
+      ctx.save();
+      if (hasNoClipEffect() && !rainbowMode.active) {
+        ctx.globalAlpha = 0.5;
+      }
+
+      ctx.fillStyle = "#290d0d";
+      ctx.strokeStyle = "#450a0a";
+      ctx.lineWidth = 2.2;
+      ctx.beginPath();
+      ctx.roundRect(x, y, w, h, 8);
+      ctx.fill();
+      ctx.stroke();
+
+      const lavaGrad = ctx.createLinearGradient(x, y, x + w, y);
+      lavaGrad.addColorStop(0, "#dc2626");
+      lavaGrad.addColorStop(0.5, "#f97316");
+      lavaGrad.addColorStop(1, "#facc15");
+      ctx.fillStyle = lavaGrad;
+      ctx.beginPath();
+      ctx.roundRect(x + 6, y + 3, w - 12, Math.max(4, h - 6), 6);
+      ctx.fill();
+
+      ctx.strokeStyle = "#fef08a";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      for (let py = y + 8; py < y + h - 6; py += 12) {
+        const wave = Math.sin(py * 0.08 + swayPhase) * 8;
+        if (py === y + 8) ctx.moveTo(x + w * 0.5 + wave, py);
+        else ctx.lineTo(x + w * 0.5 + wave, py);
+      }
+      ctx.stroke();
+
+      const lipY = isTop ? y + h - 16 : y;
+      ctx.fillStyle = "#ea580c";
+      ctx.strokeStyle = "#fde047";
+      ctx.lineWidth = 1.8;
+      ctx.beginPath();
+      ctx.roundRect(x - 4, lipY, w + 8, 16, 7);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.restore();
+    }
+
     function drawVineObstacle(x, y, w, h, isTop, swayPhase) {
       if (h <= 0) return;
 
       const centerX = x + w * 0.5;
       const stepY = 14;
-
       const strands = [
         { offset: -w * 0.22, width: w * 0.44, color: "#15803d", phaseShift: 0 },
         { offset: w * 0.22, width: w * 0.44, color: "#166534", phaseShift: Math.PI }
       ];
 
       ctx.save();
-      if (activePowerup.type === "noclip") {
+      if (hasNoClipEffect() && !rainbowMode.active) {
         ctx.globalAlpha = 0.48;
       }
 
@@ -931,18 +1972,7 @@
         ctx.ellipse(leafX, leafY, 10, 5, side * 0.45, 0, Math.PI * 2);
         ctx.fill();
         ctx.stroke();
-
-        ctx.strokeStyle = "#bbf7d0";
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.moveTo(spineX, leafY);
-        ctx.lineTo(leafX + side * 5, leafY);
-        ctx.stroke();
       }
-
-      const tipY = isTop ? y + h - 6 : y + 6;
-      const tipSway = Math.sin(tipY * 0.075 + swayPhase) * 4;
-      const tipX = centerX + tipSway;
 
       ctx.fillStyle = "#15803d";
       ctx.strokeStyle = "#052e16";
@@ -952,39 +1982,32 @@
       ctx.fill();
       ctx.stroke();
 
-      const tipLeaves = [
-        { dx: -w * 0.52, dy: isTop ? 4 : -4, ang: isTop ? 0.55 : -0.55, col: "#4ade80" },
-        { dx: w * 0.52, dy: isTop ? 4 : -4, ang: isTop ? -0.55 : 0.55, col: "#22c55e" },
-        { dx: -w * 0.25, dy: isTop ? 9 : -9, ang: isTop ? 0.85 : -0.85, col: "#86efac" },
-        { dx: w * 0.25, dy: isTop ? 9 : -9, ang: isTop ? -0.85 : 0.85, col: "#4ade80" }
-      ];
-
-      for (const tl of tipLeaves) {
-        ctx.fillStyle = tl.col;
-        ctx.strokeStyle = "#052e16";
-        ctx.lineWidth = 1.8;
-        ctx.beginPath();
-        ctx.ellipse(tipX + tl.dx, tipY + tl.dy, 11, 5.5, tl.ang, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.stroke();
-      }
-
       ctx.restore();
     }
 
     function drawObstacles() {
+      const isVolcano = getCurrentBiome() === "volcano";
       for (const obs of obstacles) {
         if (!obs.topDestroyed) {
-          drawVineObstacle(obs.x, 0, OBSTACLE_WIDTH, obs.topHeight, true, obs.swayPhase);
+          if (isVolcano) {
+            drawLavaObstacle(obs.x, 0, OBSTACLE_WIDTH, obs.topHeight, true, obs.swayPhase);
+          } else {
+            drawVineObstacle(obs.x, 0, OBSTACLE_WIDTH, obs.topHeight, true, obs.swayPhase);
+          }
         }
         if (!obs.bottomDestroyed) {
-          drawVineObstacle(obs.x, obs.bottomY, OBSTACLE_WIDTH, PLAY_HEIGHT - obs.bottomY, false, obs.swayPhase);
+          if (isVolcano) {
+            drawLavaObstacle(obs.x, obs.bottomY, OBSTACLE_WIDTH, PLAY_HEIGHT - obs.bottomY, false, obs.swayPhase);
+          } else {
+            drawVineObstacle(obs.x, obs.bottomY, OBSTACLE_WIDTH, PLAY_HEIGHT - obs.bottomY, false, obs.swayPhase);
+          }
         }
       }
     }
 
     function drawPowerupOrbs() {
       for (const orb of powerupOrbs) {
+        const isRainbowOrb = orb.type === "rainbow";
         const meta = POWERUP_META[orb.type];
         const bobY = orb.y + Math.sin(orb.bobPhase) * 6;
         const pulse = 1 + Math.sin(orb.bobPhase * 1.5) * 0.1;
@@ -993,23 +2016,23 @@
         ctx.translate(orb.x, bobY);
 
         const grad = ctx.createRadialGradient(0, 0, 3, 0, 0, orb.radius * 1.65 * pulse);
-        grad.addColorStop(0, meta.glow);
+        grad.addColorStop(0, isRainbowOrb ? getRainbowColor(0) : meta.glow);
         grad.addColorStop(1, "rgba(0, 0, 0, 0)");
         ctx.fillStyle = grad;
         ctx.beginPath();
         ctx.arc(0, 0, orb.radius * 1.65 * pulse, 0, Math.PI * 2);
         ctx.fill();
 
-        ctx.fillStyle = meta.color;
+        ctx.fillStyle = isRainbowOrb ? getRainbowColor(60) : meta.color;
         ctx.strokeStyle = "#ffffff";
         ctx.lineWidth = 2.2;
         ctx.beginPath();
-        ctx.arc(0, 0, orb.radius, 0, Math.PI * 2);
+        ctx.arc(0, 0, orb.radius * pulse, 0, Math.PI * 2);
         ctx.fill();
         ctx.stroke();
 
         ctx.fillStyle = "#ffffff";
-        ctx.font = "bold 8.5px system-ui, sans-serif";
+        ctx.font = "bold 7.5px sans-serif";
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
         ctx.fillText(meta.badge, 0, 0.5);
@@ -1018,58 +2041,18 @@
       }
     }
 
-    function drawGround() {
-      const turfGrad = ctx.createLinearGradient(0, PLAY_HEIGHT, 0, PLAY_HEIGHT + 24);
-      turfGrad.addColorStop(0, "#4ade80");
-      turfGrad.addColorStop(0.55, "#15803d");
-      turfGrad.addColorStop(1, "#052e16");
-      ctx.fillStyle = turfGrad;
-      ctx.fillRect(0, PLAY_HEIGHT, WIDTH, 24);
-
-      const envMult = gameState === "playing" ? getCurrentSpeedMultiplier() : 0.45;
-      const scroll = gameState === "playing" ? frames * BASE_OBSTACLE_SPEED * envMult : frames * 0.4;
-      for (let gx = -24; gx < WIDTH + 24; gx += 22) {
-        const tx = (((gx - scroll) % (WIDTH + 24)) + (WIDTH + 24)) % (WIDTH + 24) - 12;
-        ctx.fillStyle = "#86efac";
-        ctx.beginPath();
-        ctx.moveTo(tx, PLAY_HEIGHT + 3);
-        ctx.lineTo(tx + 4, PLAY_HEIGHT - 6);
-        ctx.lineTo(tx + 8, PLAY_HEIGHT + 3);
-        ctx.closePath();
-        ctx.fill();
-      }
-
-      ctx.fillStyle = "#1c130b";
-      ctx.fillRect(0, PLAY_HEIGHT + 22, WIDTH, GROUND_HEIGHT - 22);
-
-      ctx.fillStyle = "#332214";
-      for (let rx = -30; rx < WIDTH + 30; rx += 54) {
-        const sx = (((rx - scroll * 0.85) % (WIDTH + 60)) + (WIDTH + 60)) % (WIDTH + 60) - 30;
-        ctx.beginPath();
-        ctx.ellipse(sx, PLAY_HEIGHT + 46, 12, 4.5, 0.12, 0, Math.PI * 2);
-        ctx.fill();
-      }
-
-      ctx.strokeStyle = "#052e16";
-      ctx.lineWidth = 3;
-      ctx.beginPath();
-      ctx.moveTo(0, PLAY_HEIGHT);
-      ctx.lineTo(WIDTH, PLAY_HEIGHT);
-      ctx.stroke();
-    }
-
-    function drawWindArrows() {
+    function drawArrows() {
       for (const ar of arrows) {
         if (ar.trail.length > 1) {
           ctx.save();
-          for (let i = 1; i < ar.trail.length; i++) {
-            const tRatio = i / ar.trail.length;
-            ctx.strokeStyle = `rgba(134, 239, 172, ${tRatio * 0.7})`;
-            ctx.lineWidth = 3 + tRatio * 6;
+          for (let t = 0; t < ar.trail.length - 1; t++) {
+            const ratio = (t + 1) / ar.trail.length;
+            ctx.strokeStyle = `rgba(74, 222, 128, ${ratio * 0.55})`;
+            ctx.lineWidth = ratio * 6;
             ctx.lineCap = "round";
             ctx.beginPath();
-            ctx.moveTo(ar.trail[i - 1].x, ar.trail[i - 1].y + Math.sin(frames * 0.9 + i) * 2.5);
-            ctx.lineTo(ar.trail[i].x, ar.trail[i].y + Math.cos(frames * 0.9 + i) * 2.5);
+            ctx.moveTo(ar.trail[t].x, ar.trail[t].y);
+            ctx.lineTo(ar.trail[t + 1].x, ar.trail[t + 1].y);
             ctx.stroke();
           }
           ctx.restore();
@@ -1079,457 +2062,706 @@
         ctx.translate(ar.x, ar.y);
         ctx.rotate(ar.angle);
 
-        const vortexGrad = ctx.createLinearGradient(-34, 0, 24, 0);
-        vortexGrad.addColorStop(0, "rgba(34, 197, 94, 0)");
-        vortexGrad.addColorStop(0.5, "rgba(74, 222, 128, 0.45)");
-        vortexGrad.addColorStop(1, "rgba(220, 252, 231, 0.92)");
-        ctx.fillStyle = vortexGrad;
-        ctx.beginPath();
-        ctx.ellipse(-6, 0, 28, 10 + Math.sin(frames * 1.2) * 2.2, 0, 0, Math.PI * 2);
-        ctx.fill();
-
-        ctx.strokeStyle = "#f0fdf4";
-        ctx.lineWidth = 3;
-        ctx.beginPath();
-        ctx.moveTo(-24, 0);
-        ctx.lineTo(14, 0);
-        ctx.stroke();
-
-        ctx.fillStyle = "#4ade80";
-        ctx.strokeStyle = "#14532d";
-        ctx.lineWidth = 1.3;
-        ctx.beginPath();
-        ctx.ellipse(-25, -5, 6.5, 3, -0.45, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.stroke();
-
-        ctx.beginPath();
-        ctx.ellipse(-25, 5, 6.5, 3, 0.45, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.stroke();
-
         ctx.fillStyle = "#dcfce7";
-        ctx.strokeStyle = "#15803d";
-        ctx.lineWidth = 1.6;
+        ctx.fillRect(-18, -2, 22, 4);
+
+        ctx.fillStyle = "#22c55e";
+        ctx.strokeStyle = "#ecfdf5";
+        ctx.lineWidth = 1.4;
         ctx.beginPath();
-        ctx.moveTo(23, 0);
-        ctx.lineTo(9, -7);
-        ctx.lineTo(12, 0);
-        ctx.lineTo(9, 7);
+        ctx.moveTo(12, 0);
+        ctx.lineTo(1, -6.5);
+        ctx.lineTo(3, 0);
+        ctx.lineTo(1, 6.5);
         ctx.closePath();
         ctx.fill();
         ctx.stroke();
+
+        ctx.fillStyle = "#4ade80";
+        ctx.beginPath();
+        ctx.ellipse(-21, -3.5, 5.5, 2.4, -0.35, 0, Math.PI * 2);
+        ctx.ellipse(-21, 3.5, 5.5, 2.4, 0.35, 0, Math.PI * 2);
+        ctx.fill();
 
         ctx.restore();
       }
     }
 
-    function drawCompanionBird() {
-      const wingLift = Math.sin(archer.birdWingPhase) * (0.45 + archer.birdFlapBoost * 0.55);
-
-      ctx.save();
-      ctx.translate(13, 5);
-
-      ctx.fillStyle = "#15803d";
-      ctx.beginPath();
-      ctx.moveTo(-7, 1);
-      ctx.lineTo(-15, -3);
-      ctx.lineTo(-13, 3);
-      ctx.lineTo(-15, 6);
-      ctx.closePath();
-      ctx.fill();
-
-      ctx.fillStyle = "#4ade80";
-      ctx.strokeStyle = "#14532d";
-      ctx.lineWidth = 1.8;
-      ctx.beginPath();
-      ctx.ellipse(0, 1, 8.2, 6.4, -0.1, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.stroke();
-
-      ctx.fillStyle = "#dcfce7";
-      ctx.beginPath();
-      ctx.ellipse(1.5, 3.0, 5.0, 3.4, 0, 0, Math.PI * 2);
-      ctx.fill();
-
-      ctx.strokeStyle = "#a3e635";
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.moveTo(2, -5.5);
-      ctx.quadraticCurveTo(0, -11, -3, -9.5);
-      ctx.stroke();
-
-      ctx.fillStyle = "#0f172a";
-      ctx.beginPath();
-      ctx.arc(4.5, -1, 1.8, 0, Math.PI * 2);
-      ctx.fill();
-
-      ctx.fillStyle = "#a3e635";
-      ctx.beginPath();
-      ctx.moveTo(8, -1);
-      ctx.lineTo(13, 1);
-      ctx.lineTo(8, 3);
-      ctx.closePath();
-      ctx.fill();
-
-      ctx.save();
-      ctx.translate(-1, 0);
-      ctx.rotate(wingLift);
-      ctx.fillStyle = "#22c55e";
-      ctx.strokeStyle = "#14532d";
-      ctx.lineWidth = 1.6;
-      ctx.beginPath();
-      ctx.ellipse(-2, -3, 6.5, 3.5, -0.35, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.stroke();
-      ctx.restore();
-
-      ctx.restore();
+    function drawCloverAccent(cx, cy, r) {
+      for (let i = 0; i < 4; i++) {
+        const ang = (i * Math.PI) / 2 + Math.PI / 4;
+        ctx.beginPath();
+        ctx.arc(cx + Math.cos(ang) * r * 0.65, cy + Math.sin(ang) * r * 0.65, r * 0.52, 0, Math.PI * 2);
+        ctx.fill();
+      }
     }
 
     function drawWindArcherCookie() {
       ctx.save();
       ctx.translate(archer.x, archer.y);
 
-      if (activePowerup.type) {
-        const meta = POWERUP_META[activePowerup.type];
-        const pulseR = 35 + Math.sin(frames * 0.25) * 3;
-        const pGrad = ctx.createRadialGradient(0, 0, 8, 0, 0, pulseR);
-        pGrad.addColorStop(0, meta.glow);
-        pGrad.addColorStop(1, "rgba(0, 0, 0, 0)");
-        ctx.fillStyle = pGrad;
+      if (rainbowMode.active) {
+        const auraGrad = ctx.createRadialGradient(0, 0, 6, 0, 0, archer.radius + 16);
+        auraGrad.addColorStop(0, getRainbowColor(0));
+        auraGrad.addColorStop(0.55, getRainbowColor(120));
+        auraGrad.addColorStop(1, "rgba(255, 255, 255, 0)");
+        ctx.fillStyle = auraGrad;
         ctx.beginPath();
-        ctx.arc(0, 0, pulseR, 0, Math.PI * 2);
+        ctx.arc(0, 0, archer.radius + 16, 0, Math.PI * 2);
         ctx.fill();
 
-        if (activePowerup.type === "strength") {
-          ctx.strokeStyle = "rgba(239, 68, 68, 0.7)";
-          ctx.lineWidth = 2.2;
-          ctx.beginPath();
-          ctx.arc(0, 0, 27, 0, Math.PI * 2);
-          ctx.stroke();
-        }
-      } else {
-        const aura = ctx.createRadialGradient(0, 0, 6, 0, 0, 34);
-        aura.addColorStop(0, "rgba(134, 239, 172, 0.26)");
-        aura.addColorStop(1, "rgba(134, 239, 172, 0)");
-        ctx.fillStyle = aura;
+        ctx.strokeStyle = getRainbowColor(45);
+        ctx.lineWidth = 3;
         ctx.beginPath();
-        ctx.arc(0, 0, 34, 0, Math.PI * 2);
-        ctx.fill();
+        ctx.arc(0, 0, archer.radius + 8, 0, Math.PI * 2);
+        ctx.stroke();
+      } else if (activePowerup.type) {
+        const meta = POWERUP_META[activePowerup.type];
+        ctx.save();
+        ctx.strokeStyle = meta.color;
+        ctx.lineWidth = 2.5;
+        ctx.globalAlpha = 0.65 + Math.sin(frames * 0.2) * 0.25;
+        ctx.beginPath();
+        ctx.arc(0, 0, archer.radius + 7, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
       }
 
-      if (activePowerup.type === "noclip") {
-        ctx.globalAlpha = 0.65;
+      if (hasNoClipEffect() && !rainbowMode.active) {
+        ctx.globalAlpha = 0.72;
       }
 
       ctx.rotate(archer.tilt);
 
-      const w1 = Math.sin(archer.scarfPhase) * 6.5;
-      const w2 = Math.cos(archer.scarfPhase + 1.0) * 7.5;
-      const w3 = Math.sin(archer.scarfPhase + 2.1) * 6;
+      const w1 = Math.sin(archer.scarfPhase) * 6;
+      const w2 = Math.cos(archer.scarfPhase * 1.2) * 8;
+      const w3 = Math.sin(archer.scarfPhase * 1.4 + 0.8) * 9;
 
-      // Flowing emerald wind scarf tail billowing behind
-      ctx.fillStyle = "#15803d";
-      ctx.strokeStyle = "#052e16";
-      ctx.lineWidth = 1.7;
-      ctx.beginPath();
-      ctx.moveTo(-8, -2);
-      ctx.quadraticCurveTo(-22, -11 + w1, -39, -3 + w2);
-      ctx.quadraticCurveTo(-26, 6 + w1, -9, 4);
-      ctx.closePath();
-      ctx.fill();
-      ctx.stroke();
-
-      ctx.fillStyle = "#4ade80";
-      ctx.beginPath();
-      ctx.moveTo(-9, 2);
-      ctx.quadraticCurveTo(-22, 6 - w1, -35, 13 - w2);
-      ctx.quadraticCurveTo(-22, 12 - w1, -8, 5);
-      ctx.closePath();
-      ctx.fill();
-
-      // Slender quiver with leaf-fletched arrows on back
       ctx.save();
-      ctx.translate(-7, 2);
-      ctx.rotate(-0.42);
+      ctx.translate(-11, -2);
+      ctx.rotate(-0.44);
 
-      for (const aOff of [-2.5, 1, 4.5]) {
+      for (const aOff of [-2.2, 2.6]) {
         ctx.strokeStyle = "#ecfdf5";
-        ctx.lineWidth = 1.8;
+        ctx.lineWidth = 1.6;
         ctx.beginPath();
-        ctx.moveTo(aOff, -9);
-        ctx.lineTo(aOff, -18);
+        ctx.moveTo(aOff, -12);
+        ctx.lineTo(aOff + 1.5, -21);
         ctx.stroke();
 
-        ctx.fillStyle = "#86efac";
+        ctx.fillStyle = rainbowMode.active ? getRainbowColor(aOff * 30) : "#86efac";
+        ctx.strokeStyle = "#14532d";
+        ctx.lineWidth = 1.1;
         ctx.beginPath();
-        ctx.ellipse(aOff - 2.2, -17, 3.2, 1.6, -0.5, 0, Math.PI * 2);
-        ctx.ellipse(aOff + 2.2, -17, 3.2, 1.6, 0.5, 0, Math.PI * 2);
+        ctx.ellipse(aOff + 2.2, -21.5, 4.5, 2.2, -0.6, 0, Math.PI * 2);
         ctx.fill();
+        ctx.stroke();
       }
 
-      ctx.fillStyle = "#7c3f1d";
-      ctx.strokeStyle = "#2b1408";
-      ctx.lineWidth = 1.9;
+      ctx.fillStyle = "#6d3e24";
+      ctx.strokeStyle = "#2b1509";
+      ctx.lineWidth = 2.1;
       ctx.beginPath();
-      ctx.roundRect(-5, -10, 11, 20, 3.5);
+      ctx.roundRect(-5.5, -13, 11, 22, 3.5);
       ctx.fill();
       ctx.stroke();
 
-      ctx.fillStyle = "#166534";
-      ctx.fillRect(-4.2, -3.5, 9.4, 4.5);
+      ctx.fillStyle = rainbowMode.active ? getRainbowColor(20) : "#15803d";
+      ctx.fillRect(-5.5, -9, 11, 2.6);
+      ctx.fillRect(-5.5, 1, 11, 2.6);
       ctx.restore();
 
-      // Slim, agile cookie legs / boots
-      ctx.fillStyle = "#a3e635";
-      ctx.strokeStyle = "#2b1408";
-      ctx.lineWidth = 1.9;
-      ctx.beginPath();
-      ctx.roundRect(-4.5, 12.5, 4.6, 8.5, 2.3);
-      ctx.roundRect(2.8, 12.5, 4.6, 8.5, 2.3);
-      ctx.fill();
-      ctx.stroke();
-
-      ctx.fillStyle = "#166534";
-      ctx.fillRect(-4.5, 12.5, 4.6, 3.8);
-      ctx.fillRect(2.8, 12.5, 4.6, 3.8);
-
-      // Slimmer cookie torso & dark belt
-      const tunicGrad = ctx.createLinearGradient(-9, -4, 9, 15);
-      tunicGrad.addColorStop(0, "#84cc16");
-      tunicGrad.addColorStop(1, "#3f6212");
-
-      ctx.fillStyle = tunicGrad;
-      ctx.strokeStyle = "#2b1408";
+      ctx.fillStyle = rainbowMode.active ? getRainbowColor(0) : "#15803d";
+      ctx.strokeStyle = "#052e16";
       ctx.lineWidth = 2.1;
       ctx.beginPath();
-      ctx.roundRect(-8.5, -3.5, 17, 17.5, 6.5);
-      ctx.fill();
-      ctx.stroke();
-
-      ctx.fillStyle = "#1e293b";
-      ctx.fillRect(-8.5, 6.5, 17, 3.6);
-      ctx.fillStyle = "#4ade80";
-      ctx.fillRect(-1.8, 6.5, 3.6, 3.6);
-
-      // Flowing, wind-swept layered leaf hair (sweeping back & trailing in breeze)
-      const flowingLocks = [
-        {
-          fill: "#14532d",
-          d: [
-            [-8, -14],
-            [-24, -18 + w1 * 0.7],
-            [-40, -11 + w2 * 0.85],
-            [-26, -6 + w1 * 0.6],
-            [-8, -8]
-          ]
-        },
-        {
-          fill: "#15803d",
-          d: [
-            [-7, -18],
-            [-23, -27 + w2 * 0.75],
-            [-42, -21 + w3 * 0.9],
-            [-25, -14 + w2 * 0.65],
-            [-6, -12]
-          ]
-        },
-        {
-          fill: "#65a30d",
-          d: [
-            [-5, -21],
-            [-19, -34 + w3 * 0.8],
-            [-36, -30 + w1 * 0.9],
-            [-18, -23 + w3 * 0.65],
-            [-2, -18]
-          ]
-        },
-        {
-          fill: "#84cc16",
-          d: [
-            [1, -23],
-            [-9, -35 + w1 * 0.75],
-            [-23, -34 + w2 * 0.85],
-            [-7, -25 + w1 * 0.6],
-            [6, -21]
-          ]
-        }
-      ];
-
-      for (const lock of flowingLocks) {
-        ctx.fillStyle = lock.fill;
-        ctx.strokeStyle = "#052e16";
-        ctx.lineWidth = 1.6;
-        ctx.lineJoin = "round";
-        ctx.beginPath();
-        lock.d.forEach(([px, py], idx) => {
-          if (idx === 0) ctx.moveTo(px, py);
-          else ctx.lineTo(px, py);
-        });
-        ctx.closePath();
-        ctx.fill();
-        ctx.stroke();
-      }
-
-      // Slimmer cookie head
-      ctx.fillStyle = "#d9e29c";
-      ctx.strokeStyle = "#2b1408";
-      ctx.lineWidth = 2.1;
-      ctx.beginPath();
-      ctx.arc(1, -10, 12.8, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.stroke();
-
-      // Swept-back side & crown leaf locks framing the head
-      ctx.fillStyle = "#84cc16";
-      ctx.strokeStyle = "#14532d";
-      ctx.lineWidth = 1.6;
-      ctx.beginPath();
-      ctx.moveTo(4, -22);
-      ctx.quadraticCurveTo(13, -27 + w2 * 0.45, 19, -20 + w1 * 0.55);
-      ctx.quadraticCurveTo(12, -16, 7, -19);
+      ctx.moveTo(-9, 1);
+      ctx.bezierCurveTo(-22, -6 + w1, -35, 1 + w2, -41, 7 + w3);
+      ctx.bezierCurveTo(-36, 15 + w3, -24, 11 + w2, -16, 7 + w1);
+      ctx.quadraticCurveTo(-11, 5, -8, 6);
       ctx.closePath();
       ctx.fill();
       ctx.stroke();
 
-      // Front swooping leaf bangs across forehead
-      ctx.fillStyle = "#a3e635";
-      ctx.strokeStyle = "#14532d";
+      ctx.strokeStyle = rainbowMode.active ? getRainbowColor(90) : "#4ade80";
       ctx.lineWidth = 1.5;
       ctx.beginPath();
-      ctx.moveTo(-10.5, -13);
-      ctx.quadraticCurveTo(-3, -20.5, 5.5, -15.5);
-      ctx.quadraticCurveTo(-1.5, -11.5, -10.5, -13);
+      ctx.moveTo(-11, 3.5);
+      ctx.quadraticCurveTo(-24, 1 + w1 * 0.8, -36, 7.5 + w2 * 0.8);
+      ctx.stroke();
+
+      ctx.fillStyle = rainbowMode.active ? getRainbowColor(90) : "#e2f0b2";
+      ctx.strokeStyle = "#4d351c";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.roundRect(-6.5, 13, 6, 8, 2.5);
+      ctx.roundRect(3, 13, 6, 8, 2.5);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = rainbowMode.active ? getRainbowColor(150) : "#166534";
+      ctx.strokeStyle = "#052e16";
+      ctx.beginPath();
+      ctx.roundRect(-7.5, 17.5, 7.5, 4.5, 2);
+      ctx.roundRect(3, 17.5, 7.5, 4.5, 2);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = rainbowMode.active ? getRainbowColor(60) : "#84cc16";
+      ctx.strokeStyle = "#14532d";
+      ctx.lineWidth = 2.2;
+      ctx.beginPath();
+      ctx.ellipse(-1, 7, 11.5, 10.8, 0.08, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = rainbowMode.active ? getRainbowColor(120) : "#4ade80";
+      ctx.beginPath();
+      ctx.moveTo(2, 1);
+      ctx.lineTo(8, 1);
+      ctx.lineTo(5, 7);
+      ctx.closePath();
+      ctx.fill();
+
+      ctx.fillStyle = "#1e293b";
+      ctx.fillRect(-11.5, 9.2, 21, 3.6);
+      ctx.fillStyle = "#facc15";
+      ctx.fillRect(3.5, 9.4, 3.2, 3.2);
+
+      ctx.fillStyle = rainbowMode.active ? getRainbowColor(180) : "#166534";
+      ctx.strokeStyle = "#052e16";
+      ctx.lineWidth = 2.2;
+      ctx.beginPath();
+      ctx.roundRect(-13.5, -1.5, 26, 8.8, 4.4);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = rainbowMode.active ? getRainbowColor(220) : "#22c55e";
+      ctx.beginPath();
+      ctx.roundRect(-11.5, -0.5, 22, 4.2, 2.2);
+      ctx.fill();
+
+      ctx.fillStyle = rainbowMode.active ? getRainbowColor(30) : "#e7f3bc";
+      ctx.strokeStyle = "#5c4024";
+      ctx.lineWidth = 2.2;
+      ctx.beginPath();
+      ctx.arc(2, -8.5, 13.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = "rgba(251, 146, 60, 0.22)";
+      ctx.beginPath();
+      ctx.ellipse(9.5, -3.5, 3.2, 1.8, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = rainbowMode.active ? getRainbowColor(210) : "#4d7c0f";
+      ctx.strokeStyle = "#14532d";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(-9, -12);
+      ctx.quadraticCurveTo(-23, -17 + w1 * 0.45, -21, -5);
+      ctx.quadraticCurveTo(-14, -1, -8, -5);
       ctx.closePath();
       ctx.fill();
       ctx.stroke();
 
-      // Glowing emerald diamond gem on forehead
-      ctx.save();
-      ctx.translate(2.5, -17.5);
-      ctx.fillStyle = "#22c55e";
+      ctx.fillStyle = rainbowMode.active ? getRainbowColor(245) : "#65a30d";
+      ctx.beginPath();
+      ctx.moveTo(-10, -14);
+      ctx.quadraticCurveTo(-20, -25, -11, -28);
+      ctx.quadraticCurveTo(-5, -22, -6, -15);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = rainbowMode.active ? getRainbowColor(275) : "#84cc16";
+      ctx.beginPath();
+      ctx.moveTo(-6, -18);
+      ctx.quadraticCurveTo(-5, -34, 3.5, -33);
+      ctx.quadraticCurveTo(4.5, -23, 1, -17);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.strokeStyle = "#d9f99d";
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.moveTo(-2, -19);
+      ctx.quadraticCurveTo(-1, -26, 2, -30);
+      ctx.stroke();
+
+      ctx.fillStyle = rainbowMode.active ? getRainbowColor(310) : "#a3e635";
+      ctx.strokeStyle = "#14532d";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(1.5, -18.5);
+      ctx.quadraticCurveTo(11.5, -30, 17.5, -21.5);
+      ctx.quadraticCurveTo(13, -14.5, 5.5, -16);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = rainbowMode.active ? getRainbowColor(110) : "#10b981";
       ctx.strokeStyle = "#064e3b";
-      ctx.lineWidth = 1.4;
+      ctx.lineWidth = 1.7;
       ctx.beginPath();
-      ctx.moveTo(0, -4.8);
-      ctx.lineTo(3.7, 0);
-      ctx.lineTo(0, 4.8);
-      ctx.lineTo(-3.7, 0);
+      ctx.moveTo(4.5, -21.5);
+      ctx.lineTo(9.2, -15.5);
+      ctx.lineTo(4.5, -10.2);
+      ctx.lineTo(-0.2, -15.5);
       ctx.closePath();
       ctx.fill();
       ctx.stroke();
 
-      ctx.fillStyle = "#dcfce7";
+      ctx.fillStyle = "#34d399";
       ctx.beginPath();
-      ctx.moveTo(0, -3.0);
-      ctx.lineTo(1.6, -0.4);
-      ctx.lineTo(0, 1.3);
-      ctx.lineTo(-1.6, -0.4);
+      ctx.moveTo(4.5, -20.2);
+      ctx.lineTo(7.8, -15.5);
+      ctx.lineTo(4.5, -15.5);
       ctx.closePath();
       ctx.fill();
-      ctx.restore();
 
-      // Expressive emerald-green eyes + thick cream-white CRK eyebrows
-      ctx.fillStyle = "#16a34a";
+      ctx.fillStyle = "#ecfdf5";
       ctx.beginPath();
-      ctx.arc(6.2, -8.5, 2.8, 0, Math.PI * 2);
+      ctx.moveTo(4.5, -19.5);
+      ctx.lineTo(6.4, -16.2);
+      ctx.lineTo(4.5, -15.8);
+      ctx.closePath();
       ctx.fill();
+
+      ctx.fillStyle = "#16a34a";
+      ctx.strokeStyle = "#052e16";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.ellipse(6.8, -6.5, 2.6, 3.3, 0, 0, Math.PI * 2);
+      ctx.ellipse(12.4, -6.5, 2.3, 3.1, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
 
       ctx.fillStyle = "#052e16";
       ctx.beginPath();
-      ctx.arc(6.8, -8.5, 1.3, 0, Math.PI * 2);
+      ctx.arc(7.1, -6.2, 1.15, 0, Math.PI * 2);
+      ctx.arc(12.6, -6.2, 1.05, 0, Math.PI * 2);
       ctx.fill();
 
       ctx.fillStyle = "#ffffff";
       ctx.beginPath();
-      ctx.arc(7.4, -9.7, 1.0, 0, Math.PI * 2);
+      ctx.arc(7.6, -7.5, 0.95, 0, Math.PI * 2);
+      ctx.arc(13.1, -7.5, 0.85, 0, Math.PI * 2);
       ctx.fill();
 
-      ctx.strokeStyle = "#fefce8";
-      ctx.lineWidth = 2.9;
-      ctx.lineCap = "round";
+      ctx.fillStyle = "#ffffff";
+      ctx.strokeStyle = "#64748b";
+      ctx.lineWidth = 1.2;
       ctx.beginPath();
-      ctx.moveTo(2.5, -12.3);
-      ctx.quadraticCurveTo(7.2, -14.6, 10.8, -11.4);
-      ctx.stroke();
-
-      ctx.strokeStyle = "#2b1408";
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      ctx.moveTo(7.2, -4.8);
-      ctx.lineTo(9.8, -4.8);
-      ctx.stroke();
-
-      // Wrapped dark-emerald forest scarf around neck
-      ctx.fillStyle = "#166534";
-      ctx.strokeStyle = "#052e16";
-      ctx.lineWidth = 1.9;
-      ctx.beginPath();
-      ctx.roundRect(-10, -2.5, 19.5, 6.8, 3.4);
+      ctx.moveTo(2.2, -9.6);
+      ctx.quadraticCurveTo(7.5, -12.8, 11.8, -9.8);
+      ctx.quadraticCurveTo(7.5, -8.4, 2.2, -9.6);
+      ctx.closePath();
       ctx.fill();
       ctx.stroke();
 
-      // Outstretched arm holding the companion bird
-      ctx.strokeStyle = "#d9e29c";
-      ctx.lineWidth = 4.6;
-      ctx.lineCap = "round";
       ctx.beginPath();
-      ctx.moveTo(3.5, 4.5);
-      ctx.lineTo(12.5, 5.5);
+      ctx.moveTo(10.6, -9.9);
+      ctx.quadraticCurveTo(14.8, -12.5, 17.6, -10.2);
+      ctx.quadraticCurveTo(14.4, -8.5, 10.6, -9.9);
+      ctx.closePath();
+      ctx.fill();
       ctx.stroke();
 
-      ctx.strokeStyle = "#2b1408";
+      ctx.strokeStyle = "#5c4024";
       ctx.lineWidth = 1.4;
+      ctx.lineCap = "round";
       ctx.beginPath();
-      ctx.moveTo(3.5, 4.5);
-      ctx.lineTo(12.5, 5.5);
+      ctx.moveTo(8.5, -1.4);
+      ctx.lineTo(11.0, -1.4);
       ctx.stroke();
 
-      drawCompanionBird();
+      const bowPull = shootAnimTimer > 0 ? -4.5 : 0;
+      const bowX = 14 + bowPull * 0.35;
 
-      // Curved vine-and-clover bow
-      const recoil = shootAnimTimer > 0 ? -3.5 * (shootAnimTimer / 14) : 0;
-      ctx.save();
-      ctx.translate(16 + recoil, -1);
+      if (arrowCooldownRemaining <= 0 || shootAnimTimer > 0) {
+        ctx.strokeStyle = "#bbf7d0";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(bowX + bowPull * 0.4, 1);
+        ctx.lineTo(bowX + 15, 1);
+        ctx.stroke();
 
-      ctx.strokeStyle = "rgba(220, 252, 231, 0.85)";
-      ctx.lineWidth = 1.3;
+        ctx.fillStyle = "#4ade80";
+        ctx.beginPath();
+        ctx.moveTo(bowX + 19, 1);
+        ctx.lineTo(bowX + 13, -2.5);
+        ctx.lineTo(bowX + 13, 4.5);
+        ctx.closePath();
+        ctx.fill();
+      }
+
+      ctx.strokeStyle = "#d1fae5";
+      ctx.lineWidth = 1.2;
       ctx.beginPath();
-      ctx.moveTo(2, -17);
-      ctx.lineTo(shootAnimTimer > 0 ? -4 : 5, 0);
-      ctx.lineTo(2, 17);
-      ctx.stroke();
-
-      ctx.strokeStyle = "#4ade80";
-      ctx.lineWidth = 4;
-      ctx.beginPath();
-      ctx.arc(-5, 0, 17, -0.85, 0.85);
+      ctx.moveTo(bowX - 2, -14.5);
+      ctx.lineTo(bowX + 4 + bowPull, 1);
+      ctx.lineTo(bowX - 2, 16.5);
       ctx.stroke();
 
       ctx.strokeStyle = "#14532d";
-      ctx.lineWidth = 1.2;
+      ctx.lineWidth = 5.2;
+      ctx.lineCap = "round";
       ctx.beginPath();
-      ctx.arc(-5, 0, 17, -0.85, 0.85);
+      ctx.moveTo(bowX - 2, -14.5);
+      ctx.quadraticCurveTo(bowX + 11.5, 1, bowX - 2, 16.5);
       ctx.stroke();
 
-      for (const ang of [-0.55, 0.55]) {
-        const bx = -5 + Math.cos(ang) * 17;
-        const by = Math.sin(ang) * 17;
-        ctx.fillStyle = "#86efac";
-        ctx.strokeStyle = "#14532d";
-        ctx.lineWidth = 1;
-        for (let l = 0; l < 4; l++) {
-          const la = (l * Math.PI) / 2;
-          ctx.beginPath();
-          ctx.arc(bx + Math.cos(la) * 2.1, by + Math.sin(la) * 2.1, 2.1, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.stroke();
-        }
-      }
+      ctx.strokeStyle = rainbowMode.active ? getRainbowColor(140) : "#4ade80";
+      ctx.lineWidth = 2.8;
+      ctx.beginPath();
+      ctx.moveTo(bowX - 2, -14.5);
+      ctx.quadraticCurveTo(bowX + 11.5, 1, bowX - 2, 16.5);
+      ctx.stroke();
+
+      ctx.fillStyle = rainbowMode.active ? getRainbowColor(200) : "#22c55e";
+      ctx.strokeStyle = "#052e16";
+      ctx.lineWidth = 1.1;
+      drawCloverAccent(bowX + 5.2, -6.5, 3.4);
+      drawCloverAccent(bowX + 5.2, 8.5, 3.4);
+
+      const birdX = -15;
+      const birdY = -15 + Math.sin(archer.birdWingPhase * 0.6) * 2.5;
+      const wingAngle = Math.sin(archer.birdWingPhase) * (0.55 + archer.birdFlapBoost * 0.5);
+
+      ctx.save();
+      ctx.translate(birdX, birdY);
+
+      ctx.fillStyle = rainbowMode.active ? getRainbowColor(240) : "#86efac";
+      ctx.strokeStyle = "#064e3b";
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      ctx.ellipse(0, 0, 7.5, 5.5, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = "#f59e0b";
+      ctx.beginPath();
+      ctx.moveTo(7, -1);
+      ctx.lineTo(11.5, 0.5);
+      ctx.lineTo(7, 2.5);
+      ctx.closePath();
+      ctx.fill();
+
+      ctx.save();
+      ctx.translate(-1, -1);
+      ctx.rotate(wingAngle);
+      ctx.fillStyle = "#ecfdf5";
+      ctx.beginPath();
+      ctx.ellipse(-2, -4, 6, 2.8, -0.4, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
 
       ctx.restore();
       ctx.restore();
+    }
+
+    function drawMillennialTreePortrait(cx, cy) {
+      ctx.save();
+      ctx.translate(cx, cy);
+
+      ctx.fillStyle = "#a16207";
+      ctx.beginPath();
+      ctx.moveTo(-26, -12);
+      ctx.quadraticCurveTo(-36, 26, -24, 48);
+      ctx.lineTo(24, 48);
+      ctx.quadraticCurveTo(36, 26, 26, -12);
+      ctx.closePath();
+      ctx.fill();
+
+      ctx.strokeStyle = "#78350f";
+      ctx.lineWidth = 6;
+      ctx.lineCap = "round";
+      ctx.beginPath();
+      ctx.moveTo(-14, -22);
+      ctx.quadraticCurveTo(-34, -44, -26, -62);
+      ctx.moveTo(-24, -42);
+      ctx.lineTo(-42, -46);
+      ctx.moveTo(14, -22);
+      ctx.quadraticCurveTo(34, -44, 26, -62);
+      ctx.moveTo(24, -42);
+      ctx.lineTo(42, -46);
+      ctx.stroke();
+
+      ctx.fillStyle = "#4ade80";
+      ctx.beginPath();
+      ctx.ellipse(-34, -48, 8, 4, -0.4, 0, Math.PI * 2);
+      ctx.ellipse(34, -48, 8, 4, 0.4, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = "#6b4423";
+      ctx.strokeStyle = "#2c180a";
+      ctx.lineWidth = 2.4;
+      ctx.beginPath();
+      ctx.arc(0, -10, 21, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = "#fde047";
+      ctx.beginPath();
+      ctx.arc(0, -22, 2.2, 0, Math.PI * 2);
+      ctx.arc(-6, -18, 1.8, 0, Math.PI * 2);
+      ctx.arc(6, -18, 1.8, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = "#facc15";
+      ctx.beginPath();
+      ctx.ellipse(-8, -9, 4.5, 2.8, 0, 0, Math.PI * 2);
+      ctx.ellipse(8, -9, 4.5, 2.8, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.strokeStyle = "#ffffff";
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(-14, -14);
+      ctx.quadraticCurveTo(-8, -17, -3, -13);
+      ctx.moveTo(14, -14);
+      ctx.quadraticCurveTo(8, -17, 3, -13);
+      ctx.stroke();
+
+      ctx.restore();
+    }
+
+    function drawFireSpiritPortrait(cx, cy) {
+      ctx.save();
+      ctx.translate(cx, cy);
+
+      ctx.fillStyle = "#991b1b";
+      ctx.beginPath();
+      ctx.moveTo(-24, -8);
+      ctx.lineTo(-34, 46);
+      ctx.lineTo(34, 46);
+      ctx.lineTo(24, -8);
+      ctx.closePath();
+      ctx.fill();
+
+      const fWave = Math.sin(frames * 0.25) * 3;
+      ctx.fillStyle = "#ef4444";
+      ctx.beginPath();
+      ctx.moveTo(-20, -14);
+      ctx.quadraticCurveTo(-28, -42, -8, -54 + fWave);
+      ctx.quadraticCurveTo(0, -36, 4, -58 - fWave);
+      ctx.quadraticCurveTo(24, -44, 20, -14);
+      ctx.closePath();
+      ctx.fill();
+
+      ctx.fillStyle = "#facc15";
+      ctx.beginPath();
+      ctx.moveTo(-12, -16);
+      ctx.quadraticCurveTo(-10, -36, 0, -44 + fWave);
+      ctx.quadraticCurveTo(10, -34, 12, -16);
+      ctx.closePath();
+      ctx.fill();
+
+      ctx.fillStyle = "#f97316";
+      ctx.strokeStyle = "#450a0a";
+      ctx.lineWidth = 2.4;
+      ctx.beginPath();
+      ctx.arc(0, -8, 20, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = "#fef08a";
+      ctx.beginPath();
+      ctx.arc(-7.5, -7, 3.2, 0, Math.PI * 2);
+      ctx.arc(7.5, -7, 3.2, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.strokeStyle = "#ffffff";
+      ctx.lineWidth = 3.2;
+      ctx.beginPath();
+      ctx.moveTo(-14, -14);
+      ctx.lineTo(-3, -10);
+      ctx.moveTo(14, -14);
+      ctx.lineTo(3, -10);
+      ctx.stroke();
+
+      ctx.strokeStyle = "#450a0a";
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.moveTo(28, -32);
+      ctx.lineTo(28, 44);
+      ctx.stroke();
+
+      ctx.fillStyle = "#f97316";
+      ctx.beginPath();
+      ctx.arc(28, -34, 9, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#fef08a";
+      ctx.beginPath();
+      ctx.arc(28, -34, 4.5, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.restore();
+    }
+
+    function drawCutscene100() {
+      ctx.save();
+      ctx.fillStyle = "rgba(4, 18, 15, 0.78)";
+      ctx.fillRect(0, 0, WIDTH, PLAY_HEIGHT);
+
+      drawMillennialTreePortrait(WIDTH * 0.5, PLAY_HEIGHT * 0.25);
+
+      const boxX = 24;
+      const boxY = PLAY_HEIGHT * 0.42;
+      const boxW = WIDTH - 48;
+      const boxH = 246;
+
+      ctx.fillStyle = "rgba(10, 38, 30, 0.95)";
+      ctx.strokeStyle = "#4ade80";
+      ctx.lineWidth = 2.2;
+      ctx.beginPath();
+      ctx.roundRect(boxX, boxY, boxW, boxH, 14);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = "#fde047";
+      ctx.font = "bold 16px 'Trebuchet MS', sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText("LEVEL 100 — MILLENNIAL TREE COOKIE", WIDTH / 2, boxY + 26);
+
+      ctx.fillStyle = "#ecfdf5";
+      ctx.font = "12px 'Trebuchet MS', sans-serif";
+      ctx.fillText("Millennial Tree Cookie warns of scorching", WIDTH / 2, boxY + 54);
+      ctx.fillText("magma ahead inside the Volcano.", WIDTH / 2, boxY + 72);
+      ctx.fillText("Will you continue into the Volcano or give up?", WIDTH / 2, boxY + 94);
+
+      const btnW = 148;
+      const btnH = 40;
+      const btnY = boxY + 132;
+      const contX = WIDTH / 2 - btnW - 10;
+      const giveX = WIDTH / 2 + 10;
+
+      cutsceneButtons.continueBtn = { x: contX, y: btnY, w: btnW, h: btnH };
+      cutsceneButtons.giveUpBtn = { x: giveX, y: btnY, w: btnW, h: btnH };
+
+      ctx.fillStyle = "#16a34a";
+      ctx.strokeStyle = "#bbf7d0";
+      ctx.lineWidth = 1.8;
+      ctx.beginPath();
+      ctx.roundRect(contX, btnY, btnW, btnH, 10);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = "#ffffff";
+      ctx.font = "bold 13px 'Trebuchet MS', sans-serif";
+      ctx.fillText("Continue [C]", contX + btnW / 2, btnY + 14);
+
+      ctx.fillStyle = "#991b1b";
+      ctx.strokeStyle = "#fca5a5";
+      ctx.beginPath();
+      ctx.roundRect(giveX, btnY, btnW, btnH, 10);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = "#ffffff";
+      ctx.fillText("Give Up [G]", giveX + btnW / 2, btnY + 14);
+
+      ctx.restore();
+    }
+
+    function drawCutscene120() {
+      ctx.save();
+      ctx.fillStyle = "rgba(25, 6, 4, 0.78)";
+      ctx.fillRect(0, 0, WIDTH, PLAY_HEIGHT);
+
+      drawFireSpiritPortrait(WIDTH * 0.5, PLAY_HEIGHT * 0.25);
+
+      const boxX = 24;
+      const boxY = PLAY_HEIGHT * 0.42;
+      const boxW = WIDTH - 48;
+      const boxH = 226;
+
+      ctx.fillStyle = "rgba(42, 10, 8, 0.95)";
+      ctx.strokeStyle = "#fb923c";
+      ctx.lineWidth = 2.2;
+      ctx.beginPath();
+      ctx.roundRect(boxX, boxY, boxW, boxH, 14);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = "#fde047";
+      ctx.font = "bold 16px 'Trebuchet MS', sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText("LEVEL 120 — FIRE SPIRIT COOKIE", WIDTH / 2, boxY + 26);
+
+      ctx.fillStyle = "#ffedd5";
+      ctx.font = "12px 'Trebuchet MS', sans-serif";
+      ctx.fillText("Fire Spirit Cookie flares with blazing flame:", WIDTH / 2, boxY + 54);
+      ctx.fillText("\"So the wind dares the heart of my volcano!\"", WIDTH / 2, boxY + 72);
+
+      const btnW = 190;
+      const btnH = 40;
+      const btnX = (WIDTH - btnW) / 2;
+      const btnY = boxY + 118;
+      cutsceneButtons.nextBtn = { x: btnX, y: btnY, w: btnW, h: btnH };
+
+      ctx.fillStyle = "#ea580c";
+      ctx.strokeStyle = "#fde047";
+      ctx.lineWidth = 1.8;
+      ctx.beginPath();
+      ctx.roundRect(btnX, btnY, btnW, btnH, 10);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = "#ffffff";
+      ctx.font = "bold 13px 'Trebuchet MS', sans-serif";
+      ctx.fillText("Keep Flying [Space/C]", btnX + btnW / 2, btnY + 14);
+
+      ctx.restore();
+    }
+
+    function drawGround() {
+      const biome = getCurrentBiome();
+      const soilGrad = ctx.createLinearGradient(0, PLAY_HEIGHT, 0, HEIGHT);
+
+      if (biome === "volcano") {
+        soilGrad.addColorStop(0, "#450a0a");
+        soilGrad.addColorStop(0.35, "#290606");
+        soilGrad.addColorStop(1, "#120303");
+        ctx.fillStyle = soilGrad;
+        ctx.fillRect(0, PLAY_HEIGHT, WIDTH, GROUND_HEIGHT);
+
+        ctx.fillStyle = "#ea580c";
+        ctx.fillRect(0, PLAY_HEIGHT, WIDTH, 16);
+        ctx.fillStyle = "#facc15";
+        ctx.fillRect(0, PLAY_HEIGHT, WIDTH, 5);
+        return;
+      }
+
+      soilGrad.addColorStop(0, "#3f2718");
+      soilGrad.addColorStop(0.35, "#29180e");
+      soilGrad.addColorStop(1, "#160c07");
+      ctx.fillStyle = soilGrad;
+      ctx.fillRect(0, PLAY_HEIGHT, WIDTH, GROUND_HEIGHT);
+
+      ctx.fillStyle = "#16a34a";
+      ctx.fillRect(0, PLAY_HEIGHT, WIDTH, 16);
+
+      ctx.fillStyle = "#4ade80";
+      ctx.fillRect(0, PLAY_HEIGHT, WIDTH, 5);
+
+      const envMult = gameState === "playing" ? getCurrentSpeedMultiplier() : 0.45;
+      const turfScroll = gameState === "playing" ? frames * 2.55 * envMult : frames * 0.8;
+      const step = 22;
+
+      for (let gx = -step; gx <= WIDTH + step; gx += step) {
+        const sx = (((gx - turfScroll) % (WIDTH + step * 2)) + (WIDTH + step * 2)) % (WIDTH + step * 2) - step;
+        ctx.fillStyle = "#22c55e";
+        ctx.beginPath();
+        ctx.moveTo(sx, PLAY_HEIGHT + 16);
+        ctx.lineTo(sx + 6, PLAY_HEIGHT + 6);
+        ctx.lineTo(sx + 12, PLAY_HEIGHT + 16);
+        ctx.closePath();
+        ctx.fill();
+      }
     }
 
     function drawParticles() {
@@ -1537,158 +2769,250 @@
         const alpha = Math.max(0, Math.min(1, p.life / p.maxLife));
         ctx.save();
         ctx.globalAlpha = alpha;
-        ctx.translate(p.x, p.y);
+        ctx.fillStyle = p.color;
+
         if (p.type === "chunk") {
+          ctx.translate(p.x, p.y);
           ctx.rotate(p.rot);
-          ctx.fillStyle = p.color;
-          ctx.fillRect(-p.w / 2, -p.h / 2, p.w, p.h);
-        } else {
-          ctx.fillStyle = p.color;
+          ctx.strokeStyle = "#052e16";
+          ctx.lineWidth = 1.2;
           ctx.beginPath();
-          ctx.arc(0, 0, p.size, 0, Math.PI * 2);
+          ctx.roundRect(-p.w / 2, -p.h / 2, p.w, p.h, 2);
+          ctx.fill();
+          ctx.stroke();
+        } else {
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, p.size * alpha, 0, Math.PI * 2);
           ctx.fill();
         }
+
         ctx.restore();
       }
     }
 
-    function drawOverlayUI() {
+    function drawCheckpointBanner() {
+      if (!checkpointBanner.active) return;
+
+      const fadeIn = Math.min(1, (checkpointBanner.durationMs - checkpointBanner.remainingMs) / 250);
+      const fadeOut = Math.min(1, checkpointBanner.remainingMs / 400);
+      const alpha = Math.max(0, Math.min(fadeIn, fadeOut));
+
       ctx.save();
-      ctx.fillStyle = "rgba(6, 24, 24, 0.65)";
+      ctx.globalAlpha = alpha;
+
+      const w = 310;
+      const h = 54;
+      const x = (WIDTH - w) / 2;
+      const y = 92;
+
+      ctx.fillStyle = "rgba(15, 23, 42, 0.9)";
+      ctx.strokeStyle = "#facc15";
+      ctx.lineWidth = 2.2;
       ctx.beginPath();
-      ctx.roundRect(14, 14, 152, 54, 10);
+      ctx.roundRect(x, y, w, h, 12);
       ctx.fill();
-      ctx.strokeStyle = "rgba(134, 239, 172, 0.45)";
-      ctx.lineWidth = 1.5;
       ctx.stroke();
 
-      ctx.fillStyle = "#ecfdf5";
-      ctx.font = "bold 22px system-ui, sans-serif";
-      ctx.fillText(`Score: ${score}`, 26, 40);
-
-      ctx.fillStyle = "#bbf7d0";
-      ctx.font = "600 12px system-ui, sans-serif";
-      ctx.fillText(`Best: ${bestScore}`, 26, 58);
-
-      const ready = arrowCooldownRemaining <= 0;
-      ctx.fillStyle = ready ? "rgba(34, 197, 94, 0.25)" : "rgba(15, 23, 42, 0.72)";
-      ctx.beginPath();
-      ctx.roundRect(WIDTH - 154, 14, 140, 42, 10);
-      ctx.fill();
-      ctx.strokeStyle = ready ? "#4ade80" : "#64748b";
-      ctx.stroke();
-
-      ctx.fillStyle = ready ? "#86efac" : "#cbd5e1";
-      ctx.font = "bold 12px system-ui, sans-serif";
+      ctx.fillStyle = "#fde047";
+      ctx.font = "bold 13px 'Trebuchet MS', sans-serif";
       ctx.textAlign = "center";
-      ctx.fillText(
-        ready ? "WIND ARROW: READY" : `ARROW CD: ${(arrowCooldownRemaining / 1000).toFixed(1)}s`,
-        WIDTH - 84,
-        39
-      );
+      ctx.fillText(checkpointBanner.title, WIDTH / 2, y + 14);
 
-      if (activePowerup.type && gameState === "playing") {
+      ctx.fillStyle = "#86efac";
+      ctx.font = "bold 11px 'Trebuchet MS', sans-serif";
+      ctx.fillText(checkpointBanner.subtitle, WIDTH / 2, y + 34);
+
+      ctx.restore();
+    }
+
+    function drawHud() {
+      ctx.save();
+      ctx.font = "bold 36px 'Trebuchet MS', sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "top";
+      ctx.lineWidth = 5;
+      ctx.strokeStyle = "rgba(5, 46, 22, 0.85)";
+      ctx.strokeText(String(score), WIDTH / 2, 18);
+      ctx.fillStyle = "#ecfdf5";
+      ctx.fillText(String(score), WIDTH / 2, 18);
+
+      ctx.font = "bold 12px 'Trebuchet MS', sans-serif";
+      ctx.textAlign = "left";
+      ctx.fillStyle = "#bbf7d0";
+      ctx.fillText(`LVL ${score} • ${getBiomeLabel(getCurrentBiome())}`, 14, 16);
+
+      ctx.textAlign = "right";
+      ctx.fillText(`BEST: ${bestScore}`, WIDTH - 14, 16);
+
+      let statusY = 48;
+      if (rainbowMode.active) {
+        const secLeft = (rainbowMode.remainingMs / 1000).toFixed(1);
+        const ratio = Math.max(0, Math.min(1, rainbowMode.remainingMs / RAINBOW_DURATION_MS));
+        const pillW = 186;
+        const pillH = 28;
+        const pillX = 14;
+
+        ctx.fillStyle = "rgba(15, 23, 42, 0.88)";
+        ctx.strokeStyle = getRainbowColor(0);
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.roundRect(pillX, statusY, pillW, pillH, 8);
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.fillStyle = getRainbowColor(90);
+        ctx.globalAlpha = 0.28;
+        ctx.beginPath();
+        ctx.roundRect(pillX + 2, statusY + 2, (pillW - 4) * ratio, pillH - 4, 6);
+        ctx.fill();
+        ctx.globalAlpha = 1;
+
+        ctx.fillStyle = "#ffffff";
+        ctx.font = "bold 11px 'Trebuchet MS', sans-serif";
+        ctx.textAlign = "left";
+        ctx.textBaseline = "middle";
+        ctx.fillText(`RAINBOW OVERDRIVE (${secLeft}s)`, pillX + 9, statusY + pillH / 2 + 0.5);
+        statusY += 34;
+      }
+
+      if (gameState === "playing" && activePowerup.type) {
         const meta = POWERUP_META[activePowerup.type];
         const secLeft = (activePowerup.remainingMs / 1000).toFixed(1);
         const ratio = Math.max(0, Math.min(1, activePowerup.remainingMs / POWERUP_DURATION_MS));
 
+        const pillW = 166;
+        const pillH = 28;
+        const pillX = 14;
+
         ctx.fillStyle = meta.pillBg;
-        ctx.beginPath();
-        ctx.roundRect(WIDTH - 174, 64, 160, 34, 9);
-        ctx.fill();
         ctx.strokeStyle = meta.border;
-        ctx.lineWidth = 1.5;
+        ctx.lineWidth = 1.6;
+        ctx.beginPath();
+        ctx.roundRect(pillX, statusY, pillW, pillH, 8);
+        ctx.fill();
         ctx.stroke();
 
-        ctx.fillStyle = "#ffffff";
-        ctx.font = "bold 11px system-ui, sans-serif";
-        ctx.textAlign = "left";
-        ctx.fillText(`${meta.label} (${secLeft}s)`, WIDTH - 164, 78);
+        ctx.fillStyle = "rgba(255, 255, 255, 0.16)";
+        ctx.beginPath();
+        ctx.roundRect(pillX + 2, statusY + 2, (pillW - 4) * ratio, pillH - 4, 6);
+        ctx.fill();
 
-        ctx.fillStyle = "rgba(0, 0, 0, 0.35)";
-        ctx.fillRect(WIDTH - 164, 84, 140, 6);
-        ctx.fillStyle = meta.border;
-        ctx.fillRect(WIDTH - 164, 84, 140 * ratio, 6);
+        ctx.fillStyle = "#ffffff";
+        ctx.font = "bold 11px 'Trebuchet MS', sans-serif";
+        ctx.textAlign = "left";
+        ctx.textBaseline = "middle";
+        ctx.fillText(`${meta.label} (${secLeft}s)`, pillX + 9, statusY + pillH / 2 + 0.5);
       }
 
       ctx.restore();
+    }
 
-      if (gameState === "start") {
-        ctx.save();
-        ctx.fillStyle = "rgba(4, 18, 18, 0.55)";
-        ctx.fillRect(0, 0, WIDTH, PLAY_HEIGHT);
+    function drawStartOverlay() {
+      ctx.save();
+      ctx.fillStyle = "rgba(4, 20, 18, 0.45)";
+      ctx.fillRect(0, 0, WIDTH, PLAY_HEIGHT);
 
-        ctx.textAlign = "center";
-        ctx.fillStyle = "#86efac";
-        ctx.font = "bold 26px system-ui, sans-serif";
-        ctx.fillText("WIND ARCHER COOKIE", WIDTH / 2, PLAY_HEIGHT * 0.21);
+      const boxW = 310;
+      const boxH = 196;
+      const boxX = (WIDTH - boxW) / 2;
+      const boxY = PLAY_HEIGHT * 0.24;
 
-        ctx.fillStyle = "#ecfdf5";
-        ctx.font = "600 13.5px system-ui, sans-serif";
-        ctx.fillText("Weave through forest vines & shoot Gale Arrows", WIDTH / 2, PLAY_HEIGHT * 0.21 + 25);
+      ctx.fillStyle = "rgba(8, 36, 32, 0.9)";
+      ctx.strokeStyle = "#4ade80";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.roundRect(boxX, boxY, boxW, boxH, 14);
+      ctx.fill();
+      ctx.stroke();
 
-        ctx.fillStyle = "#fde68a";
-        ctx.font = "bold 12px system-ui, sans-serif";
-        ctx.fillText("Power-Ups: Super Strength • Super Speed • No-Clip • Jump Boost", WIDTH / 2, PLAY_HEIGHT * 0.72);
+      ctx.fillStyle = "#86efac";
+      ctx.font = "bold 20px 'Trebuchet MS', sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText("WIND ARCHER COOKIE", WIDTH / 2, boxY + 28);
 
-        ctx.fillStyle = "#bbf7d0";
-        ctx.font = "600 12px system-ui, sans-serif";
-        ctx.fillText("Wind Arrow: 4s Cooldown • Destroys up to 2 Vines", WIDTH / 2, PLAY_HEIGHT * 0.72 + 20);
+      ctx.fillStyle = "#ecfdf5";
+      ctx.font = "bold 13px 'Trebuchet MS', sans-serif";
+      ctx.fillText("Forest Vine Flight", WIDTH / 2, boxY + 50);
 
-        ctx.fillStyle = "#ffffff";
-        ctx.font = "bold 16px system-ui, sans-serif";
-        ctx.fillText("Click or Press SPACE to Fly", WIDTH / 2, PLAY_HEIGHT * 0.72 + 44);
-        ctx.restore();
-      } else if (gameState === "gameover") {
-        ctx.save();
-        ctx.fillStyle = "rgba(4, 14, 16, 0.68)";
-        ctx.fillRect(0, 0, WIDTH, PLAY_HEIGHT);
+      ctx.fillStyle = "#bbf7d0";
+      ctx.font = "12px 'Trebuchet MS', sans-serif";
+      ctx.fillText("• Checkpoints at Lvl 30, 60, 90 & 100 play dance song", WIDTH / 2, boxY + 80);
+      ctx.fillText("• Lvl 100 & 120: Millennial Tree & Fire Spirit", WIDTH / 2, boxY + 102);
+      ctx.fillText("• Ultra-rare Rainbow Orb = 10s Overdrive", WIDTH / 2, boxY + 124);
 
-        const boxW = 300;
-        const boxH = 186;
-        const bx = (WIDTH - boxW) / 2;
-        const by = (PLAY_HEIGHT - boxH) / 2;
+      ctx.fillStyle = "#4ade80";
+      ctx.font = "bold 14px 'Trebuchet MS', sans-serif";
+      ctx.fillText("Press Space or Click to Fly", WIDTH / 2, boxY + 162);
 
-        ctx.fillStyle = "rgba(9, 36, 36, 0.94)";
-        ctx.beginPath();
-        ctx.roundRect(bx, by, boxW, boxH, 14);
-        ctx.fill();
-        ctx.strokeStyle = "#4ade80";
-        ctx.lineWidth = 2;
-        ctx.stroke();
+      ctx.restore();
+    }
 
-        ctx.textAlign = "center";
-        ctx.fillStyle = "#fda4af";
-        ctx.font = "bold 24px system-ui, sans-serif";
-        ctx.fillText("GALE INTERRUPTED", WIDTH / 2, by + 44);
+    function drawGameOverOverlay() {
+      ctx.save();
+      ctx.fillStyle = "rgba(4, 20, 18, 0.55)";
+      ctx.fillRect(0, 0, WIDTH, PLAY_HEIGHT);
 
-        ctx.fillStyle = "#ecfdf5";
-        ctx.font = "bold 18px system-ui, sans-serif";
-        ctx.fillText(`Score: ${score}   |   Best: ${bestScore}`, WIDTH / 2, by + 84);
+      const boxW = 290;
+      const boxH = 172;
+      const boxX = (WIDTH - boxW) / 2;
+      const boxY = PLAY_HEIGHT * 0.27;
 
-        ctx.fillStyle = "#86efac";
-        ctx.font = "600 13px system-ui, sans-serif";
-        ctx.fillText("Press SPACE or Click to Fly Again", WIDTH / 2, by + 132);
-        ctx.restore();
-      }
+      ctx.fillStyle = "rgba(8, 36, 32, 0.92)";
+      ctx.strokeStyle = "#4ade80";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.roundRect(boxX, boxY, boxW, boxH, 14);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = "#fde68a";
+      ctx.font = "bold 22px 'Trebuchet MS', sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText("FLIGHT ENDED", WIDTH / 2, boxY + 32);
+
+      ctx.fillStyle = "#ecfdf5";
+      ctx.font = "bold 16px 'Trebuchet MS', sans-serif";
+      ctx.fillText(`Level: ${score}   |   Best: ${bestScore}`, WIDTH / 2, boxY + 72);
+
+      ctx.fillStyle = "#bbf7d0";
+      ctx.font = "12px 'Trebuchet MS', sans-serif";
+      ctx.fillText("Keep weaving through the realms!", WIDTH / 2, boxY + 102);
+
+      ctx.fillStyle = "#4ade80";
+      ctx.font = "bold 14px 'Trebuchet MS', sans-serif";
+      ctx.fillText("Press Space or Click to Retry", WIDTH / 2, boxY + 138);
+
+      ctx.restore();
     }
 
     function render() {
       ctx.save();
       if (screenShake > 0) {
-        const sx = (Math.random() - 0.5) * screenShake * 1.8;
-        const sy = (Math.random() - 0.5) * screenShake * 1.8;
+        const sx = (Math.random() - 0.5) * screenShake * 2;
+        const sy = (Math.random() - 0.5) * screenShake * 2;
         ctx.translate(sx, sy);
       }
 
       drawBackground();
+      drawCheckpointFlags();
       drawObstacles();
       drawPowerupOrbs();
-      drawGround();
-      drawWindArrows();
+      drawArrows();
       drawWindArcherCookie();
+      drawGround();
       drawParticles();
-      drawOverlayUI();
+      drawCheckpointBanner();
+      drawHud();
+
+      if (gameState === "start") {
+        drawStartOverlay();
+      } else if (gameState === "cutscene_100") {
+        drawCutscene100();
+      } else if (gameState === "cutscene_120") {
+        drawCutscene120();
+      } else if (gameState === "gameover") {
+        drawGameOverOverlay();
+      }
 
       ctx.restore();
     }
@@ -1697,13 +3021,43 @@
       const dtMs = now - lastTime;
       lastTime = now;
 
-      update(dtMs);
-      render();
+      try {
+        update(dtMs);
+        render();
+      } catch (err) {
+        console.error(err);
+      }
 
       requestAnimationFrame(loop);
     }
 
+    function hitRect(px, py, rect) {
+      if (!rect) return false;
+      return px >= rect.x && px <= rect.x + rect.w && py >= rect.y && py <= rect.y + rect.h;
+    }
+
     window.addEventListener("keydown", (e) => {
+      if (e.repeat) return;
+
+      if (gameState === "cutscene_100") {
+        if (e.code === "KeyC" || e.code === "Space" || e.code === "Enter") {
+          e.preventDefault();
+          chooseContinueVolcano();
+        } else if (e.code === "KeyG" || e.code === "Escape") {
+          e.preventDefault();
+          chooseGiveUp();
+        }
+        return;
+      }
+
+      if (gameState === "cutscene_120") {
+        if (e.code === "KeyC" || e.code === "Space" || e.code === "Enter") {
+          e.preventDefault();
+          continueAfterFireSpirit();
+        }
+        return;
+      }
+
       if (e.code === "Space" || e.code === "ArrowUp" || e.code === "KeyW") {
         e.preventDefault();
         flap();
@@ -1714,15 +3068,41 @@
     });
 
     canvas.addEventListener("pointerdown", (e) => {
+      const rect = canvas.getBoundingClientRect();
+      const scaleX = WIDTH / rect.width;
+      const scaleY = HEIGHT / rect.height;
+      const cx = (e.clientX - rect.left) * scaleX;
+      const cy = (e.clientY - rect.top) * scaleY;
+
+      if (gameState === "cutscene_100") {
+        if (hitRect(cx, cy, cutsceneButtons.continueBtn)) {
+          chooseContinueVolcano();
+        } else if (hitRect(cx, cy, cutsceneButtons.giveUpBtn)) {
+          chooseGiveUp();
+        }
+        return;
+      }
+
+      if (gameState === "cutscene_120") {
+        if (hitRect(cx, cy, cutsceneButtons.nextBtn)) {
+          continueAfterFireSpirit();
+        }
+        return;
+      }
+
       if (e.button === 2) {
         e.preventDefault();
         shootWindArrow();
-      } else {
+        return;
+      }
+      if (e.button === 0) {
         flap();
       }
     });
 
-    canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+    canvas.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+    });
 
     windArrowBtn.addEventListener("click", (e) => {
       e.stopPropagation();
@@ -1730,6 +3110,7 @@
     });
 
     resetRun();
+    updateHudButton();
     requestAnimationFrame(loop);
   </script>
 </body>
